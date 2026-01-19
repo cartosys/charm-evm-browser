@@ -433,19 +433,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if f, ok := form.(*huh.Form); ok {
 			m.form = f
 			
-			// Debug: log form state
-			fmt.Fprintf(os.Stderr, "Form state: %v, Name: %q, URL: %q\n", m.form.State, tempRPCFormName, tempRPCFormURL)
-			
 			// Check if form is completed
 			if m.form.State == huh.StateCompleted {
 				if m.settingsMode == "add" {
 					if tempRPCFormName != "" && tempRPCFormURL != "" {
 						newRPC := rpcURL{Name: tempRPCFormName, URL: tempRPCFormURL, Active: false}
 						m.rpcURLs = append(m.rpcURLs, newRPC)
-						err := saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets})
-						// Debug: uncomment to see save status
-						fmt.Fprintf(os.Stderr, "Saved new RPC: %+v, err: %v\n", newRPC, err)
-						_ = err
+						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets})
 					}
 				} else if m.settingsMode == "edit" {
 					if m.selectedRPCIdx >= 0 && m.selectedRPCIdx < len(m.rpcURLs) {
