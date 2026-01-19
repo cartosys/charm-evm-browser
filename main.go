@@ -979,7 +979,7 @@ func (m model) View() string {
 				}
 				// Add active indicator
 				if wallet.Active {
-					shortAddr = "★ " + shortAddr
+					shortAddr = "✓ " + shortAddr
 				}
 				fullAddr := lipgloss.NewStyle().Foreground(foregroundFullAddrColor).Render(wallet.Address)
 				listItems = append(listItems, marker+itemStyle.Render(shortAddr)+"\n  "+fullAddr)
