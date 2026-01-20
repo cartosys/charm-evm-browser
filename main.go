@@ -156,6 +156,7 @@ type model struct {
 	spin          spinner.Model
 	loading       bool
 	details       details
+	detailsCache  map[string]details // cache wallet details by address
 	rpcURL        string
 	ethClient     *rpc.Client
 	rpcConnected  bool // true if RPC is successfully connected
@@ -282,6 +283,7 @@ func newModel() model {
 		configPath:     configPath,
 		logViewport:    vp,
 		logEntries:     []string{},
+		detailsCache:   make(map[string]details),
 	}
 
 	// Set initial highlighted address and active address
@@ -683,6 +685,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case detailsLoadedMsg:
 		m.loading = false
 		m.details = msg.d
+		// Cache the loaded details
+		if m.details.Address != "" {
+			m.detailsCache[strings.ToLower(m.details.Address)] = m.details
+		}
 		if msg.err != nil && m.details.ErrMessage == "" {
 			m.details.ErrMessage = "Failed to load wallet details."
 			m.addLog("error", fmt.Sprintf("Failed to load details for `%s`", shortenAddr(m.details.Address)))
@@ -834,6 +840,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				addr := m.wallets[m.selectedWallet].Address
 				m.highlightedAddress = addr
 				m.activePage = pageDetails
+				
+				// Check if we have cached details for this address
+				cachedDetails, hasCached := m.detailsCache[strings.ToLower(addr)]
+				if hasCached {
+					// Use cached details
+					m.details = cachedDetails
+					m.loading = false
+					m.addLog("info", fmt.Sprintf("Showing cached details for `%s`", shortenAddr(addr)))
+					return m, nil
+				}
+				
+				// No cached data, load fresh
 				m.loading = true
 				m.details = details{Address: addr}
 				ethAddr := common.HexToAddress(addr)
@@ -885,6 +903,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// refresh
 					addr := common.HexToAddress(m.details.Address)
 					m.loading = true
+					m.addLog("info", fmt.Sprintf("Refreshing details for `%s`", shortenAddr(m.details.Address)))
 					return m, loadDetails(m.ethClient, addr, m.tokenWatch)
 
 				case "n":
