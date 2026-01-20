@@ -126,6 +126,28 @@ func LoadWalletDetailsWithTimeout(client *Client, addr common.Address, watch []W
 	return d
 }
 
+// GetBlockHeight retrieves the latest block number from the RPC endpoint
+func GetBlockHeight(client *Client) (uint64, error) {
+	return GetBlockHeightWithTimeout(client, 5*time.Second)
+}
+
+// GetBlockHeightWithTimeout retrieves the latest block number with a custom timeout
+func GetBlockHeightWithTimeout(client *Client, timeout time.Duration) (uint64, error) {
+	if client == nil || client.Client == nil {
+		return 0, context.DeadlineExceeded
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	blockNumber, err := client.BlockNumber(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	return blockNumber, nil
+}
+
 // Minimal ERC20 balanceOf via eth_call.
 var (
 	// balanceOf(address) methodID = keccak256("balanceOf(address)")[:4]
