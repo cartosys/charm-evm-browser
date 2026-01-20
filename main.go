@@ -81,6 +81,9 @@ var (
 	tempRPCFormName   string
 	tempRPCFormURL    string
 	tempNicknameField string
+	tempDappName      string
+	tempDappAddress   string
+	tempDappIcon      string
 )
 
 const (
@@ -130,9 +133,16 @@ type walletEntry struct {
 	Active  bool   `json:"active"`
 }
 
+type dApp struct {
+	Name    string `json:"name"`
+	Address string `json:"address"`
+	Icon    string `json:"icon,omitempty"`
+}
+
 type config struct {
 	RPCURLs []rpcURL      `json:"rpc_urls"`
 	Wallets []walletEntry `json:"wallets"`
+	Dapps   []dApp        `json:"dapps"`
 }
 
 // -------------------- MODEL --------------------
@@ -177,6 +187,11 @@ type model struct {
 	selectedRPCIdx int
 	form           *huh.Form
 	configPath     string
+
+	// dApp browser state
+	dapps          []dApp
+	dappMode       string // "list", "add", "edit"
+	selectedDappIdx int
 
 	// nickname editing
 	nicknaming bool
@@ -284,6 +299,9 @@ func newModel() model {
 		logViewport:    vp,
 		logEntries:     []string{},
 		detailsCache:   make(map[string]details),
+		dapps:          cfg.Dapps,
+		dappMode:       "list",
+		selectedDappIdx: 0,
 	}
 
 	// Set initial highlighted address and active address
@@ -552,6 +570,68 @@ func (m *model) createNicknameForm() {
 	m.form.Init()
 }
 
+func (m *model) createAddDappForm() {
+	tempDappName = ""
+	tempDappAddress = ""
+	tempDappIcon = ""
+
+	m.form = huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("dApp Name").
+				Description("A friendly name for this dApp").
+				Value(&tempDappName).
+				Placeholder("Uniswap"),
+
+			huh.NewInput().
+				Title("dApp Address").
+				Description("The URL or address of the dApp").
+				Value(&tempDappAddress).
+				Placeholder("https://app.uniswap.org"),
+
+			huh.NewInput().
+				Title("Icon").
+				Description("Icon or emoji for the dApp (optional)").
+				Value(&tempDappIcon).
+				Placeholder("🦄"),
+		),
+	).WithTheme(huh.ThemeCatppuccin())
+
+	m.form.Init()
+}
+
+func (m *model) createEditDappForm(idx int) {
+	if idx < 0 || idx >= len(m.dapps) {
+		return
+	}
+
+	dapp := m.dapps[idx]
+	tempDappName = dapp.Name
+	tempDappAddress = dapp.Address
+	tempDappIcon = dapp.Icon
+
+	m.form = huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("dApp Name").
+				Value(&tempDappName).
+				Placeholder("Uniswap"),
+
+			huh.NewInput().
+				Title("dApp Address").
+				Value(&tempDappAddress).
+				Placeholder("https://app.uniswap.org"),
+
+			huh.NewInput().
+				Title("Icon").
+				Value(&tempDappIcon).
+				Placeholder("🦄"),
+		),
+	).WithTheme(huh.ThemeCatppuccin())
+
+	m.form.Init()
+}
+
 // -------------------- UPDATE --------------------
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -580,7 +660,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						break
 					}
 				}
-				saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets})
+				saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
 				m.nicknaming = false
 				m.form = nil
 				return m, nil
@@ -589,6 +669,44 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Check if form was aborted (ESC pressed)
 			if m.form.State == huh.StateAborted {
 				m.nicknaming = false
+				m.form = nil
+				return m, nil
+			}
+		}
+		return m, cmd
+	}
+
+	if m.activePage == pageDetails && (m.dappMode == "add" || m.dappMode == "edit") && m.form != nil {
+		form, cmd := m.form.Update(msg)
+		if f, ok := form.(*huh.Form); ok {
+			m.form = f
+
+			// Check if form is completed
+			if m.form.State == huh.StateCompleted {
+				if m.dappMode == "add" {
+					if tempDappName != "" && tempDappAddress != "" {
+						newDapp := dApp{Name: tempDappName, Address: tempDappAddress, Icon: tempDappIcon}
+						m.dapps = append(m.dapps, newDapp)
+						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+						m.addLog("success", fmt.Sprintf("Added dApp: `%s`", tempDappName))
+					}
+				} else if m.dappMode == "edit" {
+					if m.selectedDappIdx >= 0 && m.selectedDappIdx < len(m.dapps) {
+						m.dapps[m.selectedDappIdx].Name = tempDappName
+						m.dapps[m.selectedDappIdx].Address = tempDappAddress
+						m.dapps[m.selectedDappIdx].Icon = tempDappIcon
+						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+						m.addLog("success", fmt.Sprintf("Updated dApp: `%s`", tempDappName))
+					}
+				}
+				m.dappMode = "list"
+				m.form = nil
+				return m, nil
+			}
+
+			// Check if form was aborted (ESC pressed)
+			if m.form.State == huh.StateAborted {
+				m.dappMode = "list"
 				m.form = nil
 				return m, nil
 			}
@@ -607,14 +725,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if tempRPCFormName != "" && tempRPCFormURL != "" {
 						newRPC := rpcURL{Name: tempRPCFormName, URL: tempRPCFormURL, Active: false}
 						m.rpcURLs = append(m.rpcURLs, newRPC)
-						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets})
+						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
 						m.addLog("success", fmt.Sprintf("Added RPC endpoint: `%s` (%s)", tempRPCFormName, tempRPCFormURL))
 					}
 				} else if m.settingsMode == "edit" {
 					if m.selectedRPCIdx >= 0 && m.selectedRPCIdx < len(m.rpcURLs) {
 						m.rpcURLs[m.selectedRPCIdx].Name = tempRPCFormName
 						m.rpcURLs[m.selectedRPCIdx].URL = tempRPCFormURL
-						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets})
+						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
 						m.addLog("success", fmt.Sprintf("Updated RPC endpoint: `%s`", tempRPCFormName))
 					}
 				}
@@ -759,7 +877,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.input.Blur()
 						m.addError = ""
 						// Save wallets to config
-						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets})
+						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
 						m.addLog("success", fmt.Sprintf("Added wallet `%s`", shortenAddr(newAddr)))
 						return m, nil
 					}
@@ -820,7 +938,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					// Update active address to the newly activated wallet
 					m.activeAddress = m.wallets[m.selectedWallet].Address
-					saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets})
+					saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
 					m.addLog("info", fmt.Sprintf("Activated wallet `%s`", shortenAddr(m.activeAddress)))
 				}
 				return m, nil
@@ -885,15 +1003,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.activeAddress = ""
 				}
 				// Save wallets to config
-				saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets})
+				saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
 				m.addLog("warning", fmt.Sprintf("Deleted wallet `%s`", shortenAddr(deletedAddr)))
 				return m, nil
 			}
 			return m, nil
 
 		case pageDetails:
-			// Don't handle keys if nicknaming form is active
-			if !m.nicknaming {
+			// Don't handle keys if nicknaming or dapp form is active
+			if !m.nicknaming && m.dappMode == "list" {
 				switch msg.String() {
 				case "esc", "backspace":
 					m.activePage = pageWallets
@@ -910,6 +1028,43 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// nickname
 					m.nicknaming = true
 					m.createNicknameForm()
+					return m, nil
+
+				case "up", "k":
+					if m.selectedDappIdx > 0 {
+						m.selectedDappIdx--
+					}
+					return m, nil
+
+				case "down", "j":
+					if m.selectedDappIdx < len(m.dapps)-1 {
+						m.selectedDappIdx++
+					}
+					return m, nil
+
+				case "a":
+					m.dappMode = "add"
+					m.createAddDappForm()
+					return m, nil
+
+				case "e":
+					if len(m.dapps) > 0 {
+						m.dappMode = "edit"
+						m.createEditDappForm(m.selectedDappIdx)
+					}
+					return m, nil
+
+				case "x":
+					// Delete selected dApp
+					if len(m.dapps) > 0 && m.selectedDappIdx < len(m.dapps) {
+						deletedDapp := m.dapps[m.selectedDappIdx].Name
+						m.dapps = append(m.dapps[:m.selectedDappIdx], m.dapps[m.selectedDappIdx+1:]...)
+						if m.selectedDappIdx >= len(m.dapps) && m.selectedDappIdx > 0 {
+							m.selectedDappIdx--
+						}
+						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+						m.addLog("warning", fmt.Sprintf("Deleted dApp `%s`", deletedDapp))
+					}
 					return m, nil
 				}
 			}
@@ -941,7 +1096,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						if m.selectedRPCIdx >= len(m.rpcURLs) && m.selectedRPCIdx > 0 {
 							m.selectedRPCIdx--
 						}
-						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets})
+						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
 					}
 					return m, nil
 
@@ -964,7 +1119,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.rpcURLs[i].Active = (i == m.selectedRPCIdx)
 						}
 						m.rpcURL = m.rpcURLs[m.selectedRPCIdx].URL
-						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets})
+						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
 						// Set connecting state and reconnect with new RPC
 						m.rpcConnecting = true
 						m.rpcConnected = false
@@ -1226,9 +1381,17 @@ func (m model) View() string {
 
 	case pageDetails:
 		detailsContent := m.detailsView()
+		dappBrowserContent := m.dAppBrowserView()
+		
+		// Render both panels
+		detailsPanel := panelStyle.Width(max(0, m.w-2)).Render(detailsContent)
+		dappPanel := panelStyle.Width(max(0, m.w-2)).Render(dappBrowserContent)
+		
 		// Calculate address line Y position (accounting for panel padding + global header)
 		m.addressLineY = 5 // 1 for panel padding + 2 for global header + 1 for blank line + 1 for title line
-		pageContent = panelStyle.Width(max(0, m.w-2)).Render(detailsContent)
+		
+		// Combine both panels vertically
+		pageContent = lipgloss.JoinVertical(lipgloss.Left, detailsPanel, dappPanel)
 		nav = m.navDetails()
 
 	case pageSettings:
@@ -1266,14 +1429,23 @@ func (m model) navWallets() string {
 }
 
 func (m model) navDetails() string {
-	left := strings.Join([]string{
-		key("r") + " refresh",
-		key("n") + " nickname",
-		key("click addr") + " copy",
-		key("l") + " debug log",
-		key("q") + " quit",
-		key("Esc") + " back",
-	}, "   ")
+	var left string
+	if m.dappMode == "add" || m.dappMode == "edit" {
+		left = strings.Join([]string{
+			key("Esc") + " cancel",
+		}, "   ")
+	} else {
+		left = strings.Join([]string{
+			key("r") + " refresh",
+			key("n") + " nickname",
+			key("↑/↓") + " select dApp",
+			key("a") + " add dApp",
+			key("e") + " edit dApp",
+			key("x") + " delete dApp",
+			key("l") + " debug log",
+			key("Esc") + " back",
+		}, "   ")
+	}
 
 	right := helpRightStyle.Render(
 		fmt.Sprintf("Loaded: %s", loadedAt(m.details.LoadedAt, m.loading)),
@@ -1351,6 +1523,52 @@ func (m model) detailsView() string {
 			lipgloss.NewStyle().Foreground(cText).Render(formatUnits(t.Balance, t.Decimals)),
 		)
 		lines = append(lines, row)
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func (m model) dAppBrowserView() string {
+	h := titleStyle.Render("dApp Browser")
+
+	// Show form if in add/edit mode
+	if (m.dappMode == "add" || m.dappMode == "edit") && m.form != nil {
+		return h + "\n\n" + m.form.View()
+	}
+
+	lines := []string{h, ""}
+
+	if len(m.dapps) == 0 {
+		lines = append(lines, lipgloss.NewStyle().Foreground(cMuted).Render("No dApps configured."))
+		lines = append(lines, "")
+		lines = append(lines, hotkeyStyle.Render("Press ") + key("a") + hotkeyStyle.Render(" to add your first dApp."))
+	} else {
+		lines = append(lines, lipgloss.NewStyle().Foreground(cMuted).Render("Available dApps:"))
+		lines = append(lines, "")
+
+		for i, dapp := range m.dapps {
+			var marker string
+			nameStyle := lipgloss.NewStyle().Foreground(cText)
+			addrStyle := lipgloss.NewStyle().Foreground(cMuted)
+
+			if i == m.selectedDappIdx {
+				nameStyle = nameStyle.Background(cPanel).Foreground(cAccent2).Bold(true)
+				addrStyle = addrStyle.Background(cPanel)
+				marker = lipgloss.NewStyle().Foreground(cAccent2).Render("▶ ")
+			} else {
+				marker = "  "
+			}
+
+			icon := dapp.Icon
+			if icon == "" {
+				icon = "🌐"
+			}
+
+			line := marker + icon + " " + nameStyle.Render(dapp.Name)
+			lines = append(lines, line)
+			lines = append(lines, "  "+addrStyle.Render(dapp.Address))
+			lines = append(lines, "")
+		}
 	}
 
 	return strings.Join(lines, "\n")
