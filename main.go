@@ -4,13 +4,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"math/big"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
-	"image/color"
 
 	"charm-wallet-tui/rpc"
 
@@ -18,13 +18,13 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/huh"
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/muesli/gamut"
 	"github.com/lucasb-eyer/go-colorful"
+	"github.com/muesli/gamut"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -78,8 +78,8 @@ type page int
 
 // Temporary form field storage (package-level to avoid pointer-to-copy issues)
 var (
-	tempRPCFormName string
-	tempRPCFormURL  string
+	tempRPCFormName   string
+	tempRPCFormURL    string
 	tempNicknameField string
 )
 
@@ -91,9 +91,9 @@ const (
 
 // clickableArea represents a clickable region on screen for addresses
 type clickableArea struct {
-	X, Y         int    // top-left position
+	X, Y          int    // top-left position
 	Width, Height int    // dimensions
-	Address      string // wallet address to navigate to
+	Address       string // wallet address to navigate to
 }
 
 type walletItem struct {
@@ -131,7 +131,7 @@ type walletEntry struct {
 }
 
 type config struct {
-	RPCURLs []rpcURL       `json:"rpc_urls"`
+	RPCURLs []rpcURL      `json:"rpc_urls"`
 	Wallets []walletEntry `json:"wallets"`
 }
 
@@ -147,28 +147,28 @@ type model struct {
 	selectedWallet int
 
 	// add-wallet input
-	adding    bool
-	input     textinput.Model
-	addError  string // error message when adding wallet (e.g., duplicate)
+	adding     bool
+	input      textinput.Model
+	addError   string    // error message when adding wallet (e.g., duplicate)
 	addErrTime time.Time // time when error was shown
 
 	// details state
-	spin      spinner.Model
-	loading   bool
-	details   details
-	rpcURL    string
-	ethClient *rpc.Client
-	rpcConnected bool   // true if RPC is successfully connected
-	rpcConnecting bool  // true if connection attempt is in progress
+	spin          spinner.Model
+	loading       bool
+	details       details
+	rpcURL        string
+	ethClient     *rpc.Client
+	rpcConnected  bool // true if RPC is successfully connected
+	rpcConnecting bool // true if connection attempt is in progress
 
 	// token watchlist (simple starter set)
 	// You can expand this (or load from config).
 	tokenWatch []rpc.WatchedToken
 
 	// clipboard feedback
-	copiedMsg      string
-	copiedMsgTime  time.Time
-	addressLineY   int // Y position of the address line in details view
+	copiedMsg     string
+	copiedMsgTime time.Time
+	addressLineY  int // Y position of the address line in details view
 
 	// settings state
 	settingsMode   string // "list", "add", "edit"
@@ -178,21 +178,21 @@ type model struct {
 	configPath     string
 
 	// nickname editing
-	nicknaming     bool
+	nicknaming bool
 
 	// currently highlighted address in wallet list
 	highlightedAddress string
 	// active address (the one marked with ★)
 	activeAddress string
-	
+
 	// clickable areas for mouse support
 	clickableAreas []clickableArea
 
 	// debug log panel
-	logEnabled   bool
-	logEntries   []string
-	logViewport  viewport.Model
-	logReady     bool
+	logEnabled  bool
+	logEntries  []string
+	logViewport viewport.Model
+	logReady    bool
 }
 
 // -------------------- INIT --------------------
@@ -204,13 +204,13 @@ func newModel() model {
 
 	// load config
 	cfg := loadConfig(configPath)
-	
+
 	// Load wallet entries from config
 	wallets := cfg.Wallets
 	if wallets == nil {
 		wallets = []walletEntry{}
 	}
-	
+
 	// Find active wallet or default to first
 	selectedIdx := 0
 	for i, w := range wallets {
@@ -237,12 +237,12 @@ func newModel() model {
 
 	// rpc URL from environment
 	rpcFromEnv := strings.TrimSpace(os.Getenv("ETH_RPC_URL"))
-	
+
 	// If no RPC in config but ENV is set, use ENV
 	if len(cfg.RPCURLs) == 0 && rpcFromEnv != "" {
 		cfg.RPCURLs = []rpcURL{{Name: "Default", URL: rpcFromEnv, Active: true}}
 	}
-	
+
 	// Find active RPC
 	activeRPC := rpcFromEnv
 	for _, r := range cfg.RPCURLs {
@@ -312,6 +312,8 @@ func (m model) Init() tea.Cmd {
 
 type clipboardCopiedMsg struct{}
 
+type logInitMsg struct{}
+
 type rpcConnectedMsg struct {
 	client *rpc.Client
 	err    error
@@ -324,6 +326,12 @@ func connectRPC(url string) tea.Cmd {
 	}
 }
 
+func initLogViewport() tea.Cmd {
+	return func() tea.Msg {
+		return logInitMsg{}
+	}
+}
+
 type detailsLoadedMsg struct {
 	d   details
 	err error
@@ -332,7 +340,7 @@ type detailsLoadedMsg struct {
 func loadDetails(client *rpc.Client, addr common.Address, watch []rpc.WatchedToken) tea.Cmd {
 	return func() tea.Msg {
 		walletDetails := rpc.LoadWalletDetails(client, addr, watch)
-		
+
 		// Convert rpc.WalletDetails to our details type
 		d := details{
 			Address:    walletDetails.Address,
@@ -340,7 +348,7 @@ func loadDetails(client *rpc.Client, addr common.Address, watch []rpc.WatchedTok
 			LoadedAt:   walletDetails.LoadedAt,
 			ErrMessage: walletDetails.ErrMessage,
 		}
-		
+
 		// Convert token balances
 		for _, t := range walletDetails.Tokens {
 			d.Tokens = append(d.Tokens, tokenBalance{
@@ -349,7 +357,7 @@ func loadDetails(client *rpc.Client, addr common.Address, watch []rpc.WatchedTok
 				Balance:  t.Balance,
 			})
 		}
-		
+
 		return detailsLoadedMsg{d: d, err: nil}
 	}
 }
@@ -377,12 +385,12 @@ func loadConfig(path string) config {
 	if err != nil {
 		return config{RPCURLs: []rpcURL{}}
 	}
-	
+
 	var cfg config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return config{RPCURLs: []rpcURL{}}
 	}
-	
+
 	return cfg
 }
 
@@ -401,7 +409,7 @@ func (m *model) addLog(logType, message string) {
 	if !m.logEnabled {
 		return
 	}
-	
+
 	timestamp := time.Now().Format("15:04:05")
 	var icon string
 	switch logType {
@@ -418,15 +426,15 @@ func (m *model) addLog(logType, message string) {
 	default:
 		icon = "📝"
 	}
-	
+
 	entry := fmt.Sprintf("**%s** `%s` %s", icon, timestamp, message)
 	m.logEntries = append(m.logEntries, entry)
-	
+
 	// Keep only last 100 entries to avoid memory bloat
 	if len(m.logEntries) > 100 {
 		m.logEntries = m.logEntries[1:]
 	}
-	
+
 	// Update viewport content
 	m.updateLogViewport()
 }
@@ -436,10 +444,10 @@ func (m *model) updateLogViewport() {
 	if !m.logReady {
 		return
 	}
-	
+
 	// Join all log entries with newlines
 	content := strings.Join(m.logEntries, "\n\n")
-	
+
 	// Render with glamour
 	renderer, err := glamour.NewTermRenderer(
 		glamour.WithAutoStyle(),
@@ -450,13 +458,13 @@ func (m *model) updateLogViewport() {
 		m.logViewport.SetContent(content)
 		return
 	}
-	
+
 	rendered, err := renderer.Render(content)
 	if err != nil {
 		m.logViewport.SetContent(content)
 		return
 	}
-	
+
 	m.logViewport.SetContent(rendered)
 	// Scroll to bottom to show latest entries
 	m.logViewport.GotoBottom()
@@ -465,7 +473,7 @@ func (m *model) updateLogViewport() {
 func (m *model) createAddRPCForm() {
 	tempRPCFormName = ""
 	tempRPCFormURL = ""
-	
+
 	m.form = huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().
@@ -473,7 +481,7 @@ func (m *model) createAddRPCForm() {
 				Description("A friendly name for this RPC endpoint").
 				Value(&tempRPCFormName).
 				Placeholder("My Infura Node"),
-			
+
 			huh.NewInput().
 				Title("RPC URL").
 				Description("The complete RPC URL (https://...)").
@@ -481,7 +489,7 @@ func (m *model) createAddRPCForm() {
 				Placeholder("https://mainnet.infura.io/v3/..."),
 		),
 	).WithTheme(huh.ThemeCatppuccin())
-	
+
 	// Initialize the form
 	m.form.Init()
 }
@@ -490,25 +498,25 @@ func (m *model) createEditRPCForm(idx int) {
 	if idx < 0 || idx >= len(m.rpcURLs) {
 		return
 	}
-	
+
 	rpc := m.rpcURLs[idx]
 	tempRPCFormName = rpc.Name
 	tempRPCFormURL = rpc.URL
-	
+
 	m.form = huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().
 				Title("RPC Name").
 				Value(&tempRPCFormName).
 				Placeholder("My Node"),
-			
+
 			huh.NewInput().
 				Title("RPC URL").
 				Value(&tempRPCFormURL).
 				Placeholder("https://..."),
 		),
 	).WithTheme(huh.ThemeCatppuccin())
-	
+
 	// Initialize the form
 	m.form.Init()
 }
@@ -522,12 +530,12 @@ func (m *model) createNicknameForm() {
 			break
 		}
 	}
-	
+
 	placeholderText := "Enter nickname"
 	if tempNicknameField != "" {
 		placeholderText = tempNicknameField
 	}
-	
+
 	m.form = huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().
@@ -537,7 +545,7 @@ func (m *model) createNicknameForm() {
 				Placeholder(placeholderText),
 		),
 	).WithTheme(huh.ThemeCatppuccin())
-	
+
 	// Initialize the form
 	m.form.Init()
 }
@@ -552,7 +560,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		form, cmd := m.form.Update(msg)
 		if f, ok := form.(*huh.Form); ok {
 			m.form = f
-			
+
 			// Check if form is completed
 			if m.form.State == huh.StateCompleted {
 				// Save nickname to wallet entry
@@ -575,7 +583,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.form = nil
 				return m, nil
 			}
-			
+
 			// Check if form was aborted (ESC pressed)
 			if m.form.State == huh.StateAborted {
 				m.nicknaming = false
@@ -585,12 +593,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	}
-	
+
 	if m.activePage == pageSettings && (m.settingsMode == "add" || m.settingsMode == "edit") && m.form != nil {
 		form, cmd := m.form.Update(msg)
 		if f, ok := form.(*huh.Form); ok {
 			m.form = f
-			
+
 			// Check if form is completed
 			if m.form.State == huh.StateCompleted {
 				if m.settingsMode == "add" {
@@ -613,7 +621,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Return without the form's cmd to ensure we're back in list mode
 				return m, nil
 			}
-			
+
 			// Check if form was aborted (ESC pressed)
 			if m.form.State == huh.StateAborted {
 				m.settingsMode = "list"
@@ -625,6 +633,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+
+	case logInitMsg:
+		if !m.logEnabled {
+			return m, nil
+		}
+		m.logReady = true
+		m.addLog("info", "Debug log enabled")
+		return m, nil
 
 	case rpcConnectedMsg:
 		m.rpcConnecting = false
@@ -643,25 +659,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
-		
+
 		// Only initialize viewport if log is enabled
 		if m.logEnabled {
 			// Reserve space for log panel (20 lines + borders)
 			logPanelHeight := 20
-			
+
 			// Update log viewport dimensions
-			if !m.logReady {
-				m.logViewport.Width = msg.Width - 4
-				m.logViewport.Height = logPanelHeight
-				m.logReady = true
-				m.updateLogViewport()
-			} else {
-				m.logViewport.Width = msg.Width - 4
-				m.logViewport.Height = logPanelHeight
+			m.logViewport.Width = msg.Width - 4
+			m.logViewport.Height = logPanelHeight
+			if m.logReady {
 				m.updateLogViewport()
 			}
 		}
-		
+
 		return m, nil
 
 	case spinner.TickMsg:
@@ -687,23 +698,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
-		
+
 		case "l":
 			// Toggle debug log
 			m.logEnabled = !m.logEnabled
 			if m.logEnabled {
 				// Initialize viewport when enabling
-				if !m.logReady && m.w > 0 {
+				if m.w > 0 {
 					m.logViewport.Width = m.w - 4
 					m.logViewport.Height = 20
-					m.logReady = true
 				}
-				m.addLog("info", "Debug log enabled")
-			} else {
-				// Clear logs and de-initialize when disabling
-				m.logEntries = []string{}
 				m.logReady = false
+				return m, initLogViewport()
 			}
+			// Clear logs and de-initialize when disabling
+			m.logEntries = []string{}
+			m.logReady = false
 			return m, nil
 		}
 
@@ -718,7 +728,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					val := strings.TrimSpace(m.input.Value())
 					if isValidEthAddress(val) {
 						newAddr := common.HexToAddress(val).Hex()
-						
+
 						// Check for duplicates
 						for _, w := range m.wallets {
 							if strings.EqualFold(w.Address, newAddr) {
@@ -728,7 +738,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								return m, nil
 							}
 						}
-						
+
 						// Create new wallet entry (name can be edited later)
 						newWallet := walletEntry{
 							Address: newAddr,
@@ -756,7 +766,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.input.Blur()
 					m.addError = ""
 					return m, nil
-				
+
 				case "ctrl+v":
 					// Paste from clipboard
 					clipContent, err := clipboard.ReadAll()
@@ -876,7 +886,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					addr := common.HexToAddress(m.details.Address)
 					m.loading = true
 					return m, loadDetails(m.ethClient, addr, m.tokenWatch)
-				
+
 				case "n":
 					// nickname
 					m.nicknaming = true
@@ -972,7 +982,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, loadDetails(m.ethClient, ethAddr, m.tokenWatch)
 				}
 			}
-			
+
 			// Legacy: handle address click on details page if no area matched
 			if m.activePage == pageDetails && m.details.Address != "" {
 				if msg.Y == m.addressLineY {
@@ -1013,12 +1023,12 @@ func (m model) globalHeader() string {
 			Foreground(cMuted).
 			Render("Active Address: No selection")
 	}
-	
+
 	// RPC Status with green dot
 	var statusIcon string
 	var statusColor lipgloss.Color
 	var statusText string
-	
+
 	if m.rpcURL == "" {
 		statusIcon = "○"
 		statusColor = lipgloss.Color("#c01c28")
@@ -1045,7 +1055,7 @@ func (m model) globalHeader() string {
 			statusText = "Connected"
 		}
 	}
-	
+
 	rpcDisplay := lipgloss.NewStyle().
 		Foreground(statusColor).
 		Bold(true).
@@ -1056,7 +1066,7 @@ func (m model) globalHeader() string {
 	addrWidth := lipgloss.Width(addrDisplay)
 	rpcWidth := lipgloss.Width(rpcDisplay)
 	spacerWidth := max(2, availableWidth-addrWidth-rpcWidth)
-	
+
 	var headerLine string
 	if spacerWidth < 2 {
 		// Not enough space, stack vertically
@@ -1066,23 +1076,23 @@ func (m model) globalHeader() string {
 		spacer := strings.Repeat(" ", spacerWidth)
 		headerLine = addrDisplay + spacer + rpcDisplay
 	}
-	
+
 	// Add separator line
 	separator := lipgloss.NewStyle().
 		Foreground(cBorder).
 		Render(strings.Repeat("─", max(0, m.w-8)))
-	
+
 	return headerLine + "\n" + separator
 }
 
 func (m model) View() string {
 	// Clear clickable areas for fresh render
 	m.clickableAreas = nil
-	
+
 	// Render global header outside of page content
 	globalHdr := m.globalHeader()
 	headerPanel := panelStyle.Width(max(0, m.w-2)).Render(globalHdr)
-	
+
 	// Register global header address as clickable (approximate position)
 	if m.activeAddress != "" {
 		// Header address is at approximately (4, 1) accounting for panel padding
@@ -1094,14 +1104,14 @@ func (m model) View() string {
 			Address: m.activeAddress,
 		})
 	}
-	
+
 	var pageContent string
 	var nav string
 
 	switch m.activePage {
 	case pageWallets:
-		header := titleStyle.Render("Charm Wallets")
-		subtitle := lipgloss.NewStyle().Foreground(cMuted).Render("Ethereum account holdings browser")
+		header := titleStyle.Render("Account List")
+		subtitle := lipgloss.NewStyle().Foreground(cMuted).Render("Browse accounts and addresses")
 
 		// Render wallet list using lipgloss
 		var listItems []string
@@ -1126,14 +1136,14 @@ func (m model) View() string {
 					itemStyle = lipgloss.NewStyle().Foreground(cAccent2).Bold(true)
 					fullAddr = lipgloss.NewStyle().Foreground(cText).Render(wallet.Address)
 					shortAddr = shortenAddr(wallet.Address)
-				
+
 				} else {
 					marker = "  "
 					itemStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#e1a2aa"))
 					fullAddr = lipgloss.NewStyle().Foreground(lipgloss.Color("#ba3fd7")).Render(fadeString(wallet.Address, "#7D5AFC", "#FF87D7"))
 					shortAddr = fadeString(shortenAddr(wallet.Address), "#F25D94", "#EDFF82")
 				}
-				
+
 				// Add name if present
 				if wallet.Name != "" {
 					shortAddr = wallet.Name + " - " + shortAddr
@@ -1143,7 +1153,7 @@ func (m model) View() string {
 					shortAddr = "✓ " + shortAddr
 				}
 				listItems = append(listItems, marker+itemStyle.Render(shortAddr)+"\n  "+fullAddr)
-				
+
 				// Register both short and full address lines as clickable
 				// Short address line
 				m.clickableAreas = append(m.clickableAreas, clickableArea{
@@ -1154,7 +1164,7 @@ func (m model) View() string {
 					Address: wallet.Address,
 				})
 				currentY++
-				
+
 				// Full address line
 				m.clickableAreas = append(m.clickableAreas, clickableArea{
 					X:       4,
@@ -1179,13 +1189,13 @@ func (m model) View() string {
 				hotkeyStyle.Render("Enter") + " save   " +
 				hotkeyStyle.Render("Esc") + " cancel   " +
 				hotkeyStyle.Render("Ctrl+V") + " paste"
-			
+
 			// Show error message if present and recent
 			if m.addError != "" && time.Since(m.addErrTime) < 3*time.Second {
 				errorStyle := lipgloss.NewStyle().Foreground(cWarn).Bold(true)
 				inputView += "\n" + errorStyle.Render(m.addError)
 			}
-			
+
 			addBoxView = "\n\n" + panelStyle.
 				BorderForeground(cAccent2).
 				Render(inputView)
@@ -1259,13 +1269,13 @@ func (m model) navDetails() string {
 }
 
 func (m model) detailsView() string {
-	h := titleStyle.Render("Wallet Details")
-	
+	h := titleStyle.Render("Account Details")
+
 	// Show form if in nicknaming mode
 	if m.nicknaming && m.form != nil {
 		return h + "\n\n" + m.form.View()
 	}
-	
+
 	// Find nickname for current wallet
 	var nickname string
 	for _, w := range m.wallets {
@@ -1274,17 +1284,17 @@ func (m model) detailsView() string {
 			break
 		}
 	}
-	
+
 	// Make address clickable with underline hint
 	addrStyle := lipgloss.NewStyle().Foreground(cMuted).Underline(true)
 	sub := addrStyle.Render(m.details.Address)
-	
+
 	// Add nickname if it exists
 	if nickname != "" {
 		nicknameStyle := lipgloss.NewStyle().Foreground(cAccent2).Italic(true)
 		sub = nicknameStyle.Render("\""+nickname+"\"") + "  " + sub
 	}
-	
+
 	if m.copiedMsg != "" {
 		sub += "  " + lipgloss.NewStyle().Foreground(cAccent).Render(m.copiedMsg)
 	}
@@ -1329,24 +1339,24 @@ func (m model) detailsView() string {
 
 func (m model) settingsView() string {
 	h := titleStyle.Render("RPC Settings")
-	
+
 	if m.settingsMode == "add" || m.settingsMode == "edit" {
 		if m.form != nil {
 			return h + "\n\n" + m.form.View()
 		}
 	}
-	
+
 	// List mode
 	lines := []string{h, ""}
-	
+
 	if len(m.rpcURLs) == 0 {
 		lines = append(lines, lipgloss.NewStyle().Foreground(cMuted).Render("No RPC URLs configured."))
 		lines = append(lines, "")
-		lines = append(lines, hotkeyStyle.Render("Press ") + key("a") + hotkeyStyle.Render(" to add your first RPC URL."))
+		lines = append(lines, hotkeyStyle.Render("Press ")+key("a")+hotkeyStyle.Render(" to add your first RPC URL."))
 	} else {
 		lines = append(lines, lipgloss.NewStyle().Foreground(cMuted).Render("Configured RPC Endpoints:"))
 		lines = append(lines, "")
-		
+
 		for i, rpc := range m.rpcURLs {
 			var marker string
 			if rpc.Active {
@@ -1354,23 +1364,23 @@ func (m model) settingsView() string {
 			} else {
 				marker = lipgloss.NewStyle().Foreground(cMuted).Render("○ ")
 			}
-			
+
 			nameStyle := lipgloss.NewStyle().Foreground(cText)
 			urlStyle := lipgloss.NewStyle().Foreground(cMuted)
-			
+
 			if i == m.selectedRPCIdx {
 				nameStyle = nameStyle.Background(cPanel).Foreground(cAccent2).Bold(true)
 				urlStyle = urlStyle.Background(cPanel)
 				marker = lipgloss.NewStyle().Foreground(cAccent2).Render("▶ ")
 			}
-			
+
 			line := marker + nameStyle.Render(rpc.Name)
 			lines = append(lines, line)
 			lines = append(lines, "  "+urlStyle.Render(rpc.URL))
 			lines = append(lines, "")
 		}
 	}
-	
+
 	return strings.Join(lines, "\n")
 }
 
@@ -1392,7 +1402,7 @@ func (m model) navSettings() string {
 			key("Esc") + " back",
 		}, "   ")
 	}
-	
+
 	return navStyle.Width(max(0, m.w-2)).Render(left)
 }
 
@@ -1401,22 +1411,22 @@ func (m model) renderLogPanel() string {
 		Foreground(cAccent2).
 		Bold(true).
 		Render("Debug Log")
-	
+
 	border := lipgloss.NewStyle().
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(cBorder).
 		Padding(0, 1).
 		Width(max(0, m.w-4))
-	
+
 	if !m.logReady {
-		return border.Render(title + "\n\n" + "Initializing...")
+		return border.Render(title + "\n\n" + "initializing...")
 	}
-	
+
 	return border.Render(title + "\n\n" + m.logViewport.View())
 }
 
 func fadeString(s string, firstColor string, lastColor string) string {
-	blends  := gamut.Blends(lipgloss.Color(firstColor), lipgloss.Color(lastColor), len(s))
+	blends := gamut.Blends(lipgloss.Color(firstColor), lipgloss.Color(lastColor), len(s))
 	return lipgloss.NewStyle().Render(rainbow(lipgloss.NewStyle(), s, blends))
 }
 
@@ -1463,6 +1473,7 @@ func rainbow(base lipgloss.Style, s string, colors []color.Color) string {
 	}
 	return str
 }
+
 var reEthAddr = regexp.MustCompile(`^(0x)?[0-9a-fA-F]{40}$`)
 
 func isValidEthAddress(s string) bool {
