@@ -78,17 +78,19 @@ type page int
 
 // Temporary form field storage (package-level to avoid pointer-to-copy issues)
 var (
-	tempRPCFormName   string
-	tempRPCFormURL    string
-	tempNicknameField string
-	tempDappName      string
-	tempDappAddress   string
-	tempDappIcon      string
-	tempDappNetwork   string
+	tempRPCFormName     string
+	tempRPCFormURL      string
+	tempNicknameField   string
+	tempDappName        string
+	tempDappAddress     string
+	tempDappIcon        string
+	tempDappNetwork     string
+	tempHomeMenuSelection string
 )
 
 const (
-	pageWallets page = iota
+	pageHome page = iota
+	pageWallets
 	pageDetails
 	pageSettings
 	pageDappBrowser
@@ -196,6 +198,9 @@ type model struct {
 	dappMode       string // "list", "add", "edit"
 	selectedDappIdx int
 
+	// home menu
+	homeMenuForm *huh.Form
+
 	// nickname editing
 	nicknaming bool
 
@@ -287,9 +292,9 @@ func newModel() model {
 		Background(cPanel)
 
 	m := model{
-		activePage:     pageWallets,
-		wallets:        wallets,
-		selectedWallet: selectedIdx,
+		activePage:      pageHome,
+		wallets:         wallets,
+		selectedWallet:  selectedIdx,
 		adding:         false,
 		input:          in,
 		spin:           sp,
@@ -319,7 +324,30 @@ func newModel() model {
 		}
 	}
 
+	// Create home menu form
+	m.createHomeMenuForm()
+
 	return m
+}
+
+func (m *model) createHomeMenuForm() {
+	tempHomeMenuSelection = ""
+
+	m.homeMenuForm = huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Options(
+					huh.NewOption("Account List", "wallets"),
+					huh.NewOption("RPC Settings", "settings"),
+					huh.NewOption("dApp Browser", "dapps"),
+				).
+				Title("Main Menu").
+				Description("Select a view to navigate to").
+				Value(&tempHomeMenuSelection),
+		),
+	).WithTheme(huh.ThemeCatppuccin())
+
+	m.homeMenuForm.Init()
 }
 
 func (m model) Init() tea.Cmd {
@@ -686,6 +714,31 @@ func (m *model) createEditDappForm(idx int) {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
+	// Handle home menu form updates first
+	if m.activePage == pageHome && m.homeMenuForm != nil {
+		form, cmd := m.homeMenuForm.Update(msg)
+		if f, ok := form.(*huh.Form); ok {
+			m.homeMenuForm = f
+
+			// Check if form is completed
+			if m.homeMenuForm.State == huh.StateCompleted {
+				// Navigate to selected page
+				switch tempHomeMenuSelection {
+				case "wallets":
+					m.activePage = pageWallets
+				case "settings":
+					m.activePage = pageSettings
+				case "dapps":
+					m.activePage = pageDappBrowser
+				}
+				// Reset the form for next time
+				m.createHomeMenuForm()
+				return m, nil
+			}
+		}
+		return m, cmd
+	}
+
 	// Handle form updates first (before message switching)
 	if m.activePage == pageDetails && m.nicknaming && m.form != nil {
 		form, cmd := m.form.Update(msg)
@@ -894,6 +947,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// page-specific behavior
 		switch m.activePage {
 
+		case pageHome:
+			// Home page - ESC quits
+			switch msg.String() {
+			case "esc":
+				return m, tea.Quit
+			}
+
 		case pageWallets:
 			// adding flow
 			if m.adding {
@@ -1004,7 +1064,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case "esc":
-				return m, tea.Quit
+				m.activePage = pageHome
+				return m, nil
 
 			case "enter":
 				if len(m.wallets) == 0 {
@@ -1069,7 +1130,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.nicknaming {
 				switch msg.String() {
 				case "esc", "backspace":
-					m.activePage = pageWallets
+					m.activePage = pageHome
 					return m, nil
 
 				case "r":
@@ -1092,7 +1153,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.dappMode == "list" {
 				switch msg.String() {
 				case "esc", "backspace":
-					m.activePage = pageWallets
+					m.activePage = pageHome
 					return m, nil
 
 				case "up", "k":
@@ -1139,7 +1200,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.settingsMode == "list" {
 				switch msg.String() {
 				case "esc", "backspace":
-					m.activePage = pageWallets
+					m.activePage = pageHome
 					return m, nil
 
 				case "a":
@@ -1348,6 +1409,11 @@ func (m model) View() string {
 	var nav string
 
 	switch m.activePage {
+	case pageHome:
+		homeContent := m.renderHome()
+		pageContent = panelStyle.Width(max(0, m.w-2)).Render(homeContent)
+		nav = m.navHome()
+
 	case pageWallets:
 		header := titleStyle.Render("Account List")
 		subtitle := lipgloss.NewStyle().Foreground(cMuted).Render("Browse accounts and addresses")
@@ -1479,6 +1545,24 @@ func (m model) View() string {
 	return appStyle.Render(content)
 }
 
+func (m model) renderHome() string {
+	if m.homeMenuForm != nil {
+		return m.homeMenuForm.View()
+	}
+	return "Loading menu..."
+}
+
+func (m model) navHome() string {
+	left := strings.Join([]string{
+		key("↑/↓") + " select",
+		key("Enter") + " go",
+		key("l") + " debug log",
+		key("Esc") + " quit",
+	}, "   ")
+
+	return navStyle.Width(max(0, m.w-2)).Render(left)
+}
+
 func (m model) navWallets() string {
 	left := strings.Join([]string{
 		key("↑/↓") + " move",
@@ -1489,7 +1573,7 @@ func (m model) navWallets() string {
 		key("s") + " settings",
 		key("b") + " dApps",
 		key("l") + " debug log",
-		key("Esc") + " quit",
+		key("Esc") + " back",
 	}, "   ")
 
 	return navStyle.Width(max(0, m.w-2)).Render(left)
