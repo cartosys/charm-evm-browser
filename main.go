@@ -84,6 +84,7 @@ var (
 	tempDappName      string
 	tempDappAddress   string
 	tempDappIcon      string
+	tempDappNetwork   string
 )
 
 const (
@@ -137,6 +138,7 @@ type dApp struct {
 	Name    string `json:"name"`
 	Address string `json:"address"`
 	Icon    string `json:"icon,omitempty"`
+	Network string `json:"network,omitempty"`
 }
 
 type config struct {
@@ -574,6 +576,23 @@ func (m *model) createAddDappForm() {
 	tempDappName = ""
 	tempDappAddress = ""
 	tempDappIcon = ""
+	tempDappNetwork = ""
+
+	// Build network options from RPC URLs
+	networkOptions := []huh.Option[string]{}
+	for _, rpcURL := range m.rpcURLs {
+		networkOptions = append(networkOptions, huh.NewOption(rpcURL.Name, rpcURL.Name))
+	}
+
+	// Find the active RPC URL name as default
+	defaultNetwork := ""
+	for _, rpcURL := range m.rpcURLs {
+		if rpcURL.Active {
+			defaultNetwork = rpcURL.Name
+			break
+		}
+	}
+	tempDappNetwork = defaultNetwork
 
 	m.form = huh.NewForm(
 		huh.NewGroup(
@@ -594,6 +613,12 @@ func (m *model) createAddDappForm() {
 				Description("Icon or emoji for the dApp (optional)").
 				Value(&tempDappIcon).
 				Placeholder("🦄"),
+
+			huh.NewSelect[string]().
+				Options(networkOptions...).
+				Title("Network").
+				Description("Choose the network for this dApp").
+				Value(&tempDappNetwork),
 		),
 	).WithTheme(huh.ThemeCatppuccin())
 
@@ -609,6 +634,23 @@ func (m *model) createEditDappForm(idx int) {
 	tempDappName = dapp.Name
 	tempDappAddress = dapp.Address
 	tempDappIcon = dapp.Icon
+	tempDappNetwork = dapp.Network
+
+	// Build network options from RPC URLs
+	networkOptions := []huh.Option[string]{}
+	for _, rpcURL := range m.rpcURLs {
+		networkOptions = append(networkOptions, huh.NewOption(rpcURL.Name, rpcURL.Name))
+	}
+
+	// If current network is empty, use active RPC URL as default
+	if tempDappNetwork == "" {
+		for _, rpcURL := range m.rpcURLs {
+			if rpcURL.Active {
+				tempDappNetwork = rpcURL.Name
+				break
+			}
+		}
+	}
 
 	m.form = huh.NewForm(
 		huh.NewGroup(
@@ -626,6 +668,12 @@ func (m *model) createEditDappForm(idx int) {
 				Title("Icon").
 				Value(&tempDappIcon).
 				Placeholder("🦄"),
+
+			huh.NewSelect[string]().
+				Options(networkOptions...).
+				Title("Network").
+				Description("Choose the network for this dApp").
+				Value(&tempDappNetwork),
 		),
 	).WithTheme(huh.ThemeCatppuccin())
 
@@ -685,7 +733,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.form.State == huh.StateCompleted {
 				if m.dappMode == "add" {
 					if tempDappName != "" && tempDappAddress != "" {
-						newDapp := dApp{Name: tempDappName, Address: tempDappAddress, Icon: tempDappIcon}
+						newDapp := dApp{Name: tempDappName, Address: tempDappAddress, Icon: tempDappIcon, Network: tempDappNetwork}
 						m.dapps = append(m.dapps, newDapp)
 						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
 						m.addLog("success", fmt.Sprintf("Added dApp: `%s`", tempDappName))
@@ -695,6 +743,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.dapps[m.selectedDappIdx].Name = tempDappName
 						m.dapps[m.selectedDappIdx].Address = tempDappAddress
 						m.dapps[m.selectedDappIdx].Icon = tempDappIcon
+						m.dapps[m.selectedDappIdx].Network = tempDappNetwork
 						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
 						m.addLog("success", fmt.Sprintf("Updated dApp: `%s`", tempDappName))
 					}
