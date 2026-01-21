@@ -1,24 +1,18 @@
 package main
 
 import (
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"image/color"
 	"math/big"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
-	"charm-wallet-tui/config"
-	"charm-wallet-tui/helpers"
 	"charm-wallet-tui/rpc"
-	"charm-wallet-tui/styles"
-	// View packages - ready to use when delegating rendering
-	// "charm-wallet-tui/views/dapps"
-	// "charm-wallet-tui/views/details"
-	"charm-wallet-tui/views/home"
-	// "charm-wallet-tui/views/settings"
-	// "charm-wallet-tui/views/wallets"
 
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -30,31 +24,52 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/lucasb-eyer/go-colorful"
-	// "github.com/muesli/gamut"
+	"github.com/muesli/gamut"
 
 	"github.com/ethereum/go-ethereum/common"
 )
 
 // -------------------- THEME (Lip Gloss) --------------------
-// Styles now come from the styles package
 
 var (
-	cBg      = styles.CBg
-	cPanel   = styles.CPanel
-	cBorder  = styles.CBorder
-	cMuted   = styles.CMuted
-	cText    = styles.CText
-	cAccent  = styles.CAccent
-	cAccent2 = styles.CAccent2
-	cWarn    = styles.CWarn
+	cBg      = lipgloss.Color("#0B0F14") // near-black
+	cPanel   = lipgloss.Color("#0F1720") // slightly lighter
+	cBorder  = lipgloss.Color("#874BFD")
+	cMuted   = lipgloss.Color("#8AA0B6")
+	cText    = lipgloss.Color("#D6E2F0")
+	cAccent  = lipgloss.Color("#7EE787") // green-ish
+	cAccent2 = lipgloss.Color("#79C0FF") // blue-ish
+	cWarn    = lipgloss.Color("#FFA657") // orange
 
-	appStyle       = styles.AppStyle
-	titleStyle     = styles.TitleStyle
-	panelStyle     = styles.PanelStyle
-	navStyle       = styles.NavStyle
-	hotkeyStyle    = lipgloss.NewStyle().Foreground(styles.CMuted)
-	hotkeyKeyStyle = lipgloss.NewStyle().Foreground(styles.CAccent).Bold(true)
-	helpRightStyle = lipgloss.NewStyle().Foreground(styles.CMuted)
+	appStyle = lipgloss.NewStyle().
+			Background(cBg).
+			Foreground(cText)
+
+	titleStyle = lipgloss.NewStyle().
+			Foreground(cAccent2).
+			Bold(true)
+
+	panelStyle = lipgloss.NewStyle().
+			Background(cPanel).
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(cBorder).
+			Padding(1, 2)
+
+	navStyle = lipgloss.NewStyle().
+			Background(cPanel).
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderForeground(cBorder).
+			Padding(0, 1)
+
+	hotkeyStyle = lipgloss.NewStyle().
+			Foreground(cMuted)
+
+	hotkeyKeyStyle = lipgloss.NewStyle().
+			Foreground(cAccent).
+			Bold(true)
+
+	helpRightStyle = lipgloss.NewStyle().
+			Foreground(cMuted)
 )
 
 // -------------------- DATA TYPES --------------------
@@ -63,13 +78,14 @@ type page int
 
 // Temporary form field storage (package-level to avoid pointer-to-copy issues)
 var (
-	tempRPCFormName   string
-	tempRPCFormURL    string
-	tempNicknameField string
-	tempDappName      string
-	tempDappAddress   string
-	tempDappIcon      string
-	tempDappNetwork   string
+	tempRPCFormName     string
+	tempRPCFormURL      string
+	tempNicknameField   string
+	tempDappName        string
+	tempDappAddress     string
+	tempDappIcon        string
+	tempDappNetwork     string
+	tempHomeSelection   string
 )
 
 const (
@@ -91,7 +107,7 @@ type walletItem struct {
 	addr string
 }
 
-func (w walletItem) Title() string       { return helpers.ShortenAddr(w.addr) }
+func (w walletItem) Title() string       { return shortenAddr(w.addr) }
 func (w walletItem) Description() string { return w.addr }
 func (w walletItem) FilterValue() string { return w.addr }
 
@@ -101,12 +117,37 @@ type tokenBalance struct {
 	Balance  *big.Int
 }
 
-type walletDetails struct {
+type details struct {
 	Address    string
 	EthWei     *big.Int
 	Tokens     []tokenBalance
 	LoadedAt   time.Time
 	ErrMessage string
+}
+
+type rpcURL struct {
+	Name   string
+	URL    string
+	Active bool
+}
+
+type walletEntry struct {
+	Address string `json:"address"`
+	Name    string `json:"name,omitempty"`
+	Active  bool   `json:"active"`
+}
+
+type dApp struct {
+	Name    string `json:"name"`
+	Address string `json:"address"`
+	Icon    string `json:"icon,omitempty"`
+	Network string `json:"network,omitempty"`
+}
+
+type config struct {
+	RPCURLs []rpcURL      `json:"rpc_urls"`
+	Wallets []walletEntry `json:"wallets"`
+	Dapps   []dApp        `json:"dapps"`
 }
 
 // -------------------- MODEL --------------------
@@ -117,7 +158,7 @@ type model struct {
 	activePage page
 
 	// main list
-	wallets        []config.WalletEntry
+	wallets        []walletEntry
 	selectedWallet int
 
 	// add-wallet input
@@ -129,8 +170,8 @@ type model struct {
 	// details state
 	spin          spinner.Model
 	loading       bool
-	details       walletDetails
-	detailsCache  map[string]walletDetails // cache wallet details by address
+	details       details
+	detailsCache  map[string]details // cache wallet details by address
 	rpcURL        string
 	ethClient     *rpc.Client
 	rpcConnected  bool // true if RPC is successfully connected
@@ -147,13 +188,13 @@ type model struct {
 
 	// settings state
 	settingsMode   string // "list", "add", "edit"
-	rpcURLs        []config.RPCUrl
+	rpcURLs        []rpcURL
 	selectedRPCIdx int
 	form           *huh.Form
 	configPath     string
 
 	// dApp browser state
-	dapps           []config.DApp
+	dapps           []dApp
 	dappMode        string // "list", "add", "edit"
 	selectedDappIdx int
 
@@ -186,12 +227,12 @@ func newModel() model {
 	configPath := filepath.Join(homeDir, ".charm-wallet-config.json")
 
 	// load config
-	cfg := config.Load(configPath)
+	cfg := loadConfig(configPath)
 
 	// Load wallet entries from config
 	wallets := cfg.Wallets
 	if wallets == nil {
-		wallets = []config.WalletEntry{}
+		wallets = []walletEntry{}
 	}
 
 	// Find active wallet or default to first
@@ -223,7 +264,7 @@ func newModel() model {
 
 	// If no RPC in config but ENV is set, use ENV
 	if len(cfg.RPCURLs) == 0 && rpcFromEnv != "" {
-		cfg.RPCURLs = []config.RPCUrl{{Name: "Default", URL: rpcFromEnv, Active: true}}
+		cfg.RPCURLs = []rpcURL{{Name: "Default", URL: rpcFromEnv, Active: true}}
 	}
 
 	// Find active RPC
@@ -265,7 +306,7 @@ func newModel() model {
 		configPath:     configPath,
 		logViewport:    vp,
 		logEntries:     []string{},
-		detailsCache:   make(map[string]walletDetails),
+		detailsCache:   make(map[string]details),
 		dapps:          cfg.Dapps,
 		dappMode:       "list",
 		selectedDappIdx: 0,
@@ -320,24 +361,24 @@ func initLogViewport() tea.Cmd {
 }
 
 type detailsLoadedMsg struct {
-	d   walletDetails
+	d   details
 	err error
 }
 
 func loadDetails(client *rpc.Client, addr common.Address, watch []rpc.WatchedToken) tea.Cmd {
 	return func() tea.Msg {
-		rpcDetails := rpc.LoadWalletDetails(client, addr, watch)
+		walletDetails := rpc.LoadWalletDetails(client, addr, watch)
 
-		// Convert rpc.WalletDetails to our walletDetails type
-		d := walletDetails{
-			Address:    rpcDetails.Address,
-			EthWei:     rpcDetails.EthWei,
-			LoadedAt:   rpcDetails.LoadedAt,
-			ErrMessage: rpcDetails.ErrMessage,
+		// Convert rpc.WalletDetails to our details type
+		d := details{
+			Address:    walletDetails.Address,
+			EthWei:     walletDetails.EthWei,
+			LoadedAt:   walletDetails.LoadedAt,
+			ErrMessage: walletDetails.ErrMessage,
 		}
 
 		// Convert token balances
-		for _, t := range rpcDetails.Tokens {
+		for _, t := range walletDetails.Tokens {
 			d.Tokens = append(d.Tokens, tokenBalance{
 				Symbol:   t.Symbol,
 				Decimals: t.Decimals,
@@ -363,6 +404,30 @@ func clearClipboardMsg() tea.Cmd {
 	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
 		return struct{ clearClipboard bool }{true}
 	})
+}
+
+// -------------------- CONFIG FUNCTIONS --------------------
+
+func loadConfig(path string) config {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return config{RPCURLs: []rpcURL{}}
+	}
+
+	var cfg config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return config{RPCURLs: []rpcURL{}}
+	}
+
+	return cfg
+}
+
+func saveConfig(path string, cfg config) error {
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
 }
 
 // -------------------- LOG FUNCTIONS --------------------
@@ -434,7 +499,7 @@ func (m *model) updateLogViewport() {
 }
 
 func (m *model) createHomeMenuForm() {
-	home.TempSelection = ""
+	tempHomeSelection = ""
 
 	m.homeMenuForm = huh.NewForm(
 		huh.NewGroup(
@@ -446,7 +511,7 @@ func (m *model) createHomeMenuForm() {
 				).
 				Title("Main Menu").
 				Description("Select a view to navigate to").
-				Value(&home.TempSelection),
+				Value(&tempHomeSelection),
 		),
 	).WithTheme(huh.ThemeCatppuccin())
 
@@ -655,7 +720,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Check if form is completed
 			if m.homeMenuForm.State == huh.StateCompleted {
 				// Navigate to selected page
-				switch home.TempSelection {
+				switch tempHomeSelection {
 				case "accounts":
 					m.activePage = pageWallets
 				case "settings":
@@ -694,16 +759,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						oldName := m.wallets[i].Name
 						m.wallets[i].Name = strings.TrimSpace(tempNicknameField)
 						if oldName == "" && m.wallets[i].Name != "" {
-							m.addLog("success", fmt.Sprintf("Set nickname `%s` for wallet `%s`", m.wallets[i].Name, helpers.ShortenAddr(m.details.Address)))
+							m.addLog("success", fmt.Sprintf("Set nickname `%s` for wallet `%s`", m.wallets[i].Name, shortenAddr(m.details.Address)))
 						} else if m.wallets[i].Name == "" {
-							m.addLog("info", fmt.Sprintf("Cleared nickname for wallet `%s`", helpers.ShortenAddr(m.details.Address)))
+							m.addLog("info", fmt.Sprintf("Cleared nickname for wallet `%s`", shortenAddr(m.details.Address)))
 						} else {
-							m.addLog("success", fmt.Sprintf("Updated nickname to `%s` for wallet `%s`", m.wallets[i].Name, helpers.ShortenAddr(m.details.Address)))
+							m.addLog("success", fmt.Sprintf("Updated nickname to `%s` for wallet `%s`", m.wallets[i].Name, shortenAddr(m.details.Address)))
 						}
 						break
 					}
 				}
-				config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+				saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
 				m.nicknaming = false
 				m.form = nil
 				return m, nil
@@ -728,9 +793,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.form.State == huh.StateCompleted {
 				if m.dappMode == "add" {
 					if tempDappName != "" && tempDappAddress != "" {
-						newDapp := config.DApp{Name: tempDappName, Address: tempDappAddress, Icon: tempDappIcon, Network: tempDappNetwork}
+						newDapp := dApp{Name: tempDappName, Address: tempDappAddress, Icon: tempDappIcon, Network: tempDappNetwork}
 						m.dapps = append(m.dapps, newDapp)
-						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
 						m.addLog("success", fmt.Sprintf("Added dApp: `%s`", tempDappName))
 					}
 				} else if m.dappMode == "edit" {
@@ -739,7 +804,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.dapps[m.selectedDappIdx].Address = tempDappAddress
 						m.dapps[m.selectedDappIdx].Icon = tempDappIcon
 						m.dapps[m.selectedDappIdx].Network = tempDappNetwork
-						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
 						m.addLog("success", fmt.Sprintf("Updated dApp: `%s`", tempDappName))
 					}
 				}
@@ -767,16 +832,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.form.State == huh.StateCompleted {
 				if m.settingsMode == "add" {
 					if tempRPCFormName != "" && tempRPCFormURL != "" {
-						newRPC := config.RPCUrl{Name: tempRPCFormName, URL: tempRPCFormURL, Active: false}
+						newRPC := rpcURL{Name: tempRPCFormName, URL: tempRPCFormURL, Active: false}
 						m.rpcURLs = append(m.rpcURLs, newRPC)
-						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
 						m.addLog("success", fmt.Sprintf("Added RPC endpoint: `%s` (%s)", tempRPCFormName, tempRPCFormURL))
 					}
 				} else if m.settingsMode == "edit" {
 					if m.selectedRPCIdx >= 0 && m.selectedRPCIdx < len(m.rpcURLs) {
 						m.rpcURLs[m.selectedRPCIdx].Name = tempRPCFormName
 						m.rpcURLs[m.selectedRPCIdx].URL = tempRPCFormURL
-						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
 						m.addLog("success", fmt.Sprintf("Updated RPC endpoint: `%s`", tempRPCFormName))
 					}
 				}
@@ -853,11 +918,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.err != nil && m.details.ErrMessage == "" {
 			m.details.ErrMessage = "Failed to load wallet details."
-			m.addLog("error", fmt.Sprintf("Failed to load details for `%s`", helpers.ShortenAddr(m.details.Address)))
+			m.addLog("error", fmt.Sprintf("Failed to load details for `%s`", shortenAddr(m.details.Address)))
 		} else if m.details.ErrMessage != "" {
-			m.addLog("error", fmt.Sprintf("Wallet `%s`: %s", helpers.ShortenAddr(m.details.Address), m.details.ErrMessage))
+			m.addLog("error", fmt.Sprintf("Wallet `%s`: %s", shortenAddr(m.details.Address), m.details.ErrMessage))
 		} else {
-			m.addLog("success", fmt.Sprintf("Loaded details for `%s` - ETH: %s", helpers.ShortenAddr(m.details.Address), helpers.FormatETH(m.details.EthWei)))
+			m.addLog("success", fmt.Sprintf("Loaded details for `%s` - ETH: %s", shortenAddr(m.details.Address), formatETH(m.details.EthWei)))
 		}
 		return m, nil
 
@@ -899,7 +964,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				switch msg.String() {
 				case "enter":
 					val := strings.TrimSpace(m.input.Value())
-					if helpers.IsValidEthAddress(val) {
+					if isValidEthAddress(val) {
 						newAddr := common.HexToAddress(val).Hex()
 
 						// Check for duplicates
@@ -913,7 +978,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 
 						// Create new wallet entry (name can be edited later)
-						newWallet := config.WalletEntry{
+						newWallet := walletEntry{
 							Address: newAddr,
 							Name:    "",
 							Active:  false,
@@ -926,8 +991,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.input.Blur()
 						m.addError = ""
 						// Save wallets to config
-						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
-						m.addLog("success", fmt.Sprintf("Added wallet `%s`", helpers.ShortenAddr(newAddr)))
+						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+						m.addLog("success", fmt.Sprintf("Added wallet `%s`", shortenAddr(newAddr)))
 						return m, nil
 					}
 					// invalid -> keep input, maybe later show toast
@@ -987,8 +1052,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					// Update active address to the newly activated wallet
 					m.activeAddress = m.wallets[m.selectedWallet].Address
-					config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
-					m.addLog("info", fmt.Sprintf("Activated wallet `%s`", helpers.ShortenAddr(m.activeAddress)))
+					saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+					m.addLog("info", fmt.Sprintf("Activated wallet `%s`", shortenAddr(m.activeAddress)))
 				}
 				return m, nil
 
@@ -1024,13 +1089,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Use cached details
 					m.details = cachedDetails
 					m.loading = false
-					m.addLog("info", fmt.Sprintf("Showing cached details for `%s`", helpers.ShortenAddr(addr)))
+					m.addLog("info", fmt.Sprintf("Showing cached details for `%s`", shortenAddr(addr)))
 					return m, nil
 				}
 				
 				// No cached data, load fresh
 				m.loading = true
-				m.details = walletDetails{Address: addr}
+				m.details = details{Address: addr}
 				ethAddr := common.HexToAddress(addr)
 				return m, loadDetails(m.ethClient, ethAddr, m.tokenWatch)
 
@@ -1062,8 +1127,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.activeAddress = ""
 				}
 				// Save wallets to config
-				config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
-				m.addLog("warning", fmt.Sprintf("Deleted wallet `%s`", helpers.ShortenAddr(deletedAddr)))
+				saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+				m.addLog("warning", fmt.Sprintf("Deleted wallet `%s`", shortenAddr(deletedAddr)))
 				return m, nil
 			}
 			return m, nil
@@ -1080,7 +1145,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// refresh
 					addr := common.HexToAddress(m.details.Address)
 					m.loading = true
-					m.addLog("info", fmt.Sprintf("Refreshing details for `%s`", helpers.ShortenAddr(m.details.Address)))
+					m.addLog("info", fmt.Sprintf("Refreshing details for `%s`", shortenAddr(m.details.Address)))
 					return m, loadDetails(m.ethClient, addr, m.tokenWatch)
 
 				case "n":
@@ -1131,7 +1196,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						if m.selectedDappIdx >= len(m.dapps) && m.selectedDappIdx > 0 {
 							m.selectedDappIdx--
 						}
-						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
 						m.addLog("warning", fmt.Sprintf("Deleted dApp `%s`", deletedDapp))
 					}
 					return m, nil
@@ -1165,7 +1230,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						if m.selectedRPCIdx >= len(m.rpcURLs) && m.selectedRPCIdx > 0 {
 							m.selectedRPCIdx--
 						}
-						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
 					}
 					return m, nil
 
@@ -1188,7 +1253,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.rpcURLs[i].Active = (i == m.selectedRPCIdx)
 						}
 						m.rpcURL = m.rpcURLs[m.selectedRPCIdx].URL
-						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+						saveConfig(m.configPath, config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
 						// Set connecting state and reconnect with new RPC
 						m.rpcConnecting = true
 						m.rpcConnected = false
@@ -1220,7 +1285,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.highlightedAddress = area.Address
 					m.activePage = pageDetails
 					m.loading = true
-					m.details = walletDetails{Address: area.Address}
+					m.details = details{Address: area.Address}
 					ethAddr := common.HexToAddress(area.Address)
 					return m, loadDetails(m.ethClient, ethAddr, m.tokenWatch)
 				}
@@ -1260,7 +1325,7 @@ func (m model) globalHeader() string {
 		addrDisplay = lipgloss.NewStyle().
 			Foreground(cAccent2).
 			Bold(true).
-			Render("Active Address: " + helpers.FadeString(helpers.ShortenAddr(m.activeAddress), "#F25D94", "#EDFF82"))
+			Render("Active Address: " + fadeString(shortenAddr(m.activeAddress), "#F25D94", "#EDFF82"))
 	} else {
 		addrDisplay = lipgloss.NewStyle().
 			Foreground(cMuted).
@@ -1383,13 +1448,13 @@ func (m model) View() string {
 					marker = lipgloss.NewStyle().Foreground(cAccent2).Bold(true).Render("▶ ")
 					itemStyle = lipgloss.NewStyle().Foreground(cAccent2).Bold(true)
 					fullAddr = lipgloss.NewStyle().Foreground(cText).Render(wallet.Address)
-					shortAddr = helpers.ShortenAddr(wallet.Address)
+					shortAddr = shortenAddr(wallet.Address)
 
 				} else {
 					marker = "  "
 					itemStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#e1a2aa"))
-					fullAddr = lipgloss.NewStyle().Foreground(lipgloss.Color("#ba3fd7")).Render(helpers.FadeString(wallet.Address, "#7D5AFC", "#FF87D7"))
-					shortAddr = helpers.FadeString(helpers.ShortenAddr(wallet.Address), "#F25D94", "#EDFF82")
+					fullAddr = lipgloss.NewStyle().Foreground(lipgloss.Color("#ba3fd7")).Render(fadeString(wallet.Address, "#7D5AFC", "#FF87D7"))
+					shortAddr = fadeString(shortenAddr(wallet.Address), "#F25D94", "#EDFF82")
 				}
 
 				// Add name if present
@@ -1533,7 +1598,7 @@ func (m model) navDetails() string {
 	}, "   ")
 
 	right := helpRightStyle.Render(
-		fmt.Sprintf("Loaded: %s", helpers.LoadedAt(m.details.LoadedAt, m.loading)),
+		fmt.Sprintf("Loaded: %s", loadedAt(m.details.LoadedAt, m.loading)),
 	)
 
 	return navStyle.Width(max(0, m.w-2)).Render(
@@ -1608,7 +1673,7 @@ func (m model) detailsView() string {
 
 	ethLine := fmt.Sprintf("%s  %s",
 		lipgloss.NewStyle().Foreground(cAccent2).Bold(true).Render("ETH"),
-		lipgloss.NewStyle().Foreground(cText).Render(helpers.FormatETH(m.details.EthWei)),
+		lipgloss.NewStyle().Foreground(cText).Render(formatETH(m.details.EthWei)),
 	)
 
 	lines := []string{h, sub, "", ethLine, ""}
@@ -1625,7 +1690,7 @@ func (m model) detailsView() string {
 	for _, t := range m.details.Tokens {
 		row := fmt.Sprintf("%-6s  %s",
 			lipgloss.NewStyle().Foreground(cAccent).Render(t.Symbol),
-			lipgloss.NewStyle().Foreground(cText).Render(helpers.FormatToken(t.Balance, t.Decimals, t.Symbol)),
+			lipgloss.NewStyle().Foreground(cText).Render(formatUnits(t.Balance, t.Decimals)),
 		)
 		lines = append(lines, row)
 	}
@@ -1767,6 +1832,11 @@ func (m model) renderLogPanel() string {
 	return border.Render(title + "\n\n" + m.logViewport.View())
 }
 
+func fadeString(s string, firstColor string, lastColor string) string {
+	blends := gamut.Blends(lipgloss.Color(firstColor), lipgloss.Color(lastColor), len(s))
+	return lipgloss.NewStyle().Render(rainbow(lipgloss.NewStyle(), s, blends))
+}
+
 func key(s string) string {
 	return hotkeyKeyStyle.Render(s)
 }
@@ -1781,6 +1851,27 @@ func rpcStatus(url string, c *rpc.Client) string {
 	return "connected"
 }
 
+func loadedAt(t time.Time, loading bool) string {
+	if loading {
+		return "loading…"
+	}
+	if t.IsZero() {
+		return "—"
+	}
+	return t.Format("15:04:05")
+}
+
+// -------------------- HELPERS --------------------
+
+func shortenAddr(a string) string {
+
+	a = strings.TrimSpace(a)
+	if len(a) < 12 {
+		return a
+	}
+
+	return a[:6] + "…" + a[len(a)-4:]
+}
 func rainbow(base lipgloss.Style, s string, colors []color.Color) string {
 	var str string
 	for i, ss := range s {
@@ -1788,6 +1879,59 @@ func rainbow(base lipgloss.Style, s string, colors []color.Color) string {
 		str = str + base.Foreground(lipgloss.Color(color.Hex())).Render(string(ss))
 	}
 	return str
+}
+
+var reEthAddr = regexp.MustCompile(`^(0x)?[0-9a-fA-F]{40}$`)
+
+func isValidEthAddress(s string) bool {
+	s = strings.TrimSpace(s)
+	if !reEthAddr.MatchString(s) {
+		return false
+	}
+	if !strings.HasPrefix(s, "0x") {
+		s = "0x" + s
+	}
+	// additional sanity check
+	_, err := hex.DecodeString(strings.TrimPrefix(s, "0x"))
+	return err == nil
+}
+
+func formatETH(wei *big.Int) string {
+	if wei == nil {
+		return "0"
+	}
+	// ETH has 18 decimals
+	return formatUnits(wei, 18) + " ETH"
+}
+
+func formatUnits(amount *big.Int, decimals uint8) string {
+	if amount == nil {
+		return "0"
+	}
+	dec := int(decimals)
+	if dec == 0 {
+		return amount.String()
+	}
+
+	// integer + fractional splitting
+	base := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(dec)), nil)
+	intPart := new(big.Int).Div(amount, base)
+	fracPart := new(big.Int).Mod(amount, base)
+
+	// show up to 6 decimals, trimmed
+	maxDP := 6
+	if dec < maxDP {
+		maxDP = dec
+	}
+	fracStr := fracPart.Text(10)
+	fracStr = strings.Repeat("0", dec-len(fracStr)) + fracStr
+	fracStr = fracStr[:maxDP]
+	fracStr = strings.TrimRight(fracStr, "0")
+
+	if fracStr == "" {
+		return intPart.String()
+	}
+	return fmt.Sprintf("%s.%s", intPart.String(), fracStr)
 }
 
 func min(a, b int) int {
