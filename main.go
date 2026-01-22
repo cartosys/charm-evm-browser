@@ -15,7 +15,7 @@ import (
 	"charm-wallet-tui/styles"
 	// View packages - ready to use when delegating rendering
 	// "charm-wallet-tui/views/dapps"
-	// "charm-wallet-tui/views/details"
+	"charm-wallet-tui/views/details"
 	// "charm-wallet-tui/views/settings"
 	"charm-wallet-tui/views/wallets"
 
@@ -1331,7 +1331,7 @@ func (m model) View() string {
 		nav = wallets.Nav(m.w - 2)
 
 	case pageDetails:
-		detailsContent := m.detailsView()
+		detailsContent := details.Render(m.details, m.nicknaming, m.form)
 		
 		// Render details panel only (dApp browser moved to its own page)
 		pageContent = panelStyle.Width(max(0, m.w-2)).Render(detailsContent)
@@ -1339,7 +1339,7 @@ func (m model) View() string {
 		// Calculate address line Y position (accounting for panel padding + global header)
 		m.addressLineY = 5 // 1 for panel padding + 2 for global header + 1 for blank line + 1 for title line
 		
-		nav = m.navDetails()
+		nav = details.Nav(m.w - 2, m.details, m.loading)
 
 	case pageDappBrowser:
 		dappBrowserContent := m.dAppBrowserView()
