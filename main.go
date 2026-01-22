@@ -17,7 +17,7 @@ import (
 	// "charm-wallet-tui/views/dapps"
 	// "charm-wallet-tui/views/details"
 	// "charm-wallet-tui/views/settings"
-	// "charm-wallet-tui/views/wallets"
+	"charm-wallet-tui/views/wallets"
 
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/list"
@@ -79,13 +79,6 @@ const (
 	pageSettings
 	pageDappBrowser
 )
-
-// clickableArea represents a clickable region on screen for addresses
-type clickableArea struct {
-	X, Y          int    // top-left position
-	Width, Height int    // dimensions
-	Address       string // wallet address to navigate to
-}
 
 type walletItem struct {
 	addr string
@@ -178,9 +171,6 @@ type model struct {
 	highlightedAddress string
 	// active address (the one marked with ★)
 	activeAddress string
-
-	// clickable areas for mouse support
-	clickableAreas []clickableArea
 
 	// debug log panel
 	logEnabled  bool
@@ -1225,41 +1215,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case tea.MouseMsg:
-		if msg.Type == tea.MouseLeft {
-			// Check if click is on any registered clickable address
-			for _, area := range m.clickableAreas {
-				if msg.X >= area.X && msg.X < area.X+area.Width &&
-					msg.Y >= area.Y && msg.Y < area.Y+area.Height {
-					// If on details page and clicking same address, copy to clipboard
-					if m.activePage == pageDetails && area.Address == m.details.Address {
-						return m, copyToClipboard(area.Address)
-					}
-					// Otherwise navigate to wallet details
-					// Find wallet index
-					for i, w := range m.wallets {
-						if strings.EqualFold(w.Address, area.Address) {
-							m.selectedWallet = i
-							break
-						}
-					}
-					m.highlightedAddress = area.Address
-					m.activePage = pageDetails
-					m.loading = true
-					m.details = walletDetails{Address: area.Address}
-					ethAddr := common.HexToAddress(area.Address)
-					return m, loadDetails(m.ethClient, ethAddr, m.tokenWatch)
-				}
-			}
-
-			// Legacy: handle address click on details page if no area matched
-			if m.activePage == pageDetails && m.details.Address != "" {
-				if msg.Y == m.addressLineY {
-					return m, copyToClipboard(m.details.Address)
-				}
-			}
-		}
-
 	case clipboardCopiedMsg:
 		m.copiedMsg = "✓ Copied address to clipboard"
 		m.copiedMsgTime = time.Now()
@@ -1355,24 +1310,9 @@ func (m model) globalHeader() string {
 }
 
 func (m model) View() string {
-	// Clear clickable areas for fresh render
-	m.clickableAreas = nil
-
 	// Render global header outside of page content
 	globalHdr := m.globalHeader()
 	headerPanel := panelStyle.Width(max(0, m.w-2)).Render(globalHdr)
-
-	// Register global header address as clickable (approximate position)
-	if m.activeAddress != "" {
-		// Header address is at approximately (4, 1) accounting for panel padding
-		m.clickableAreas = append(m.clickableAreas, clickableArea{
-			X:       4,
-			Y:       1,
-			Width:   42, // Ethereum address length
-			Height:  1,
-			Address: m.activeAddress,
-		})
-	}
 
 	var pageContent string
 	var nav string
@@ -1384,100 +1324,11 @@ func (m model) View() string {
 		nav = m.navHome()
 
 	case pageWallets:
-		header := titleStyle.Render("Account List")
-		subtitle := lipgloss.NewStyle().Foreground(cMuted).Render("Browse accounts and addresses")
 
-		// Render wallet list using lipgloss
-		var listItems []string
-		if len(m.wallets) == 0 {
-			listItems = append(listItems, lipgloss.NewStyle().Foreground(cMuted).Render("No wallets added yet. Press 'a' to add one."))
-		} else {
-			// Starting Y position accounting for:
-			// - global header panel (varies, ~5 lines)
-			// - page content panel padding (1 line top)
-			// - title line (1)
-			// - subtitle (1)
-			// - blank line (1)
-			// Total ~9 lines from top
-			currentY := 9
-			var fullAddr string
-			var shortAddr string
-			for i, wallet := range m.wallets {
-				var itemStyle lipgloss.Style
-				var marker string
-				if i == m.selectedWallet {
-					marker = lipgloss.NewStyle().Foreground(cAccent2).Bold(true).Render("▶ ")
-					itemStyle = lipgloss.NewStyle().Foreground(cAccent2).Bold(true)
-					fullAddr = lipgloss.NewStyle().Foreground(cText).Render(wallet.Address)
-					shortAddr = helpers.ShortenAddr(wallet.Address)
-
-				} else {
-					marker = "  "
-					itemStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#e1a2aa"))
-					fullAddr = lipgloss.NewStyle().Foreground(lipgloss.Color("#ba3fd7")).Render(helpers.FadeString(wallet.Address, "#7D5AFC", "#FF87D7"))
-					shortAddr = helpers.FadeString(helpers.ShortenAddr(wallet.Address), "#F25D94", "#EDFF82")
-				}
-
-				// Add name if present
-				if wallet.Name != "" {
-					shortAddr = wallet.Name + " - " + shortAddr
-				}
-				// Add active indicator
-				if wallet.Active {
-					shortAddr = "✓ " + shortAddr
-				}
-				listItems = append(listItems, marker+itemStyle.Render(shortAddr)+"\n  "+fullAddr)
-
-				// Register both short and full address lines as clickable
-				// Short address line
-				m.clickableAreas = append(m.clickableAreas, clickableArea{
-					X:       4,
-					Y:       currentY,
-					Width:   lipgloss.Width(shortAddr) + 2,
-					Height:  1,
-					Address: wallet.Address,
-				})
-				currentY++
-
-				// Full address line
-				m.clickableAreas = append(m.clickableAreas, clickableArea{
-					X:       4,
-					Y:       currentY,
-					Width:   42, // Full Ethereum address width
-					Height:  1,
-					Address: wallet.Address,
-				})
-				currentY += 2 // Account for blank line between items
-			}
-		}
-		listView := strings.Join(listItems, "\n\n")
-
-		// Status bar
-		statusBar := lipgloss.NewStyle().Foreground(cMuted).Render(
-			fmt.Sprintf("%d wallets", len(m.wallets)),
-		)
-
-		var addBoxView string
-		if m.adding {
-			inputView := m.input.View() + "\n" +
-				hotkeyStyle.Render("Enter") + " save   " +
-				hotkeyStyle.Render("Esc") + " cancel   " +
-				hotkeyStyle.Render("Ctrl+V") + " paste"
-
-			// Show error message if present and recent
-			if m.addError != "" && time.Since(m.addErrTime) < 3*time.Second {
-				errorStyle := lipgloss.NewStyle().Foreground(cWarn).Bold(true)
-				inputView += "\n" + errorStyle.Render(m.addError)
-			}
-
-			addBoxView = "\n\n" + panelStyle.
-				BorderForeground(cAccent2).
-				Render(inputView)
-		}
-
-		walletsContent := header + "\n" + subtitle + "\n\n" + listView + "\n\n" + statusBar + addBoxView
+		walletsContent := wallets.Render(m.wallets, m.selectedWallet, m.highlightedAddress)
+	
 		pageContent = panelStyle.Width(max(0, m.w-2)).Render(walletsContent)
-		nav = m.navWallets()
+		nav = wallets.Nav(m.w - 2)
 
 	case pageDetails:
 		detailsContent := m.detailsView()
@@ -1528,23 +1379,6 @@ func (m model) navHome() string {
 		key("↑/↓") + " select",
 		key("Enter") + " go",
 		key("/") + " search",
-		key("l") + " debug log",
-		key("Esc") + " quit",
-	}, "   ")
-
-	return navStyle.Width(max(0, m.w-2)).Render(left)
-}
-
-func (m model) navWallets() string {
-	left := strings.Join([]string{
-		key("↑/↓") + " move",
-		key("Enter") + " open",
-		key("Space") + " activate",
-		key("a") + " add",
-		key("d") + " delete",
-		key("h") + " home",
-		key("s") + " settings",
-		key("b") + " dApps",
 		key("l") + " debug log",
 		key("Esc") + " quit",
 	}, "   ")
@@ -1837,7 +1671,7 @@ func max(a, b int) int {
 
 func main() {
 	m := newModel()
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Println("error:", err)
 		os.Exit(1)
