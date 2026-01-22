@@ -461,7 +461,14 @@ func (m *model) createHomeMenuList() {
 	delegate.Styles.DimmedDesc = lipgloss.NewStyle().Foreground(cMuted)
 	delegate.Styles.FilterMatch = lipgloss.NewStyle().Underline(true).Foreground(cAccent)
 
-	menu := list.New(items, delegate, max(0, m.w-6), max(0, m.h-12))
+	// Calculate available height:
+	// - Global header: ~5 lines
+	// - Page title + subtitle: ~3 lines
+	// - Nav bar: ~2 lines
+	// - Debug log reserve: 15 lines
+	// Total overhead: ~25 lines
+	menuHeight := max(0, m.h-25)
+	menu := list.New(items, delegate, max(0, m.w-6), menuHeight)
 	menu.SetShowTitle(false)
 	menu.SetShowStatusBar(false)
 	menu.SetShowPagination(false)
@@ -851,7 +858,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if m.homeMenuReady {
-			m.homeMenu.SetSize(max(0, m.w-6), max(0, m.h-12))
+			// Use same calculation as createHomeMenuList: total overhead ~25 lines
+			menuHeight := max(0, m.h-25)
+			m.homeMenu.SetSize(max(0, m.w-6), menuHeight)
 		}
 
 		return m, nil
