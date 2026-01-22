@@ -16,11 +16,11 @@ import (
 	// View packages - ready to use when delegating rendering
 	// "charm-wallet-tui/views/dapps"
 	// "charm-wallet-tui/views/details"
-	"charm-wallet-tui/views/home"
 	// "charm-wallet-tui/views/settings"
 	// "charm-wallet-tui/views/wallets"
 
 	"github.com/atotto/clipboard"
+	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -95,6 +95,16 @@ func (w walletItem) Title() string       { return helpers.ShortenAddr(w.addr) }
 func (w walletItem) Description() string { return w.addr }
 func (w walletItem) FilterValue() string { return w.addr }
 
+type homeMenuItem struct {
+	title string
+	desc  string
+	page  string
+}
+
+func (h homeMenuItem) Title() string       { return h.title }
+func (h homeMenuItem) Description() string { return h.desc }
+func (h homeMenuItem) FilterValue() string { return h.title + " " + h.desc }
+
 type tokenBalance struct {
 	Symbol   string
 	Decimals uint8
@@ -158,7 +168,8 @@ type model struct {
 	selectedDappIdx int
 
 	// home menu
-	homeMenuForm *huh.Form
+	homeMenu      list.Model
+	homeMenuReady bool
 
 	// nickname editing
 	nicknaming bool
@@ -433,24 +444,35 @@ func (m *model) updateLogViewport() {
 	m.logViewport.GotoBottom()
 }
 
-func (m *model) createHomeMenuForm() {
-	home.TempSelection = ""
+func (m *model) createHomeMenuList() {
+	items := []list.Item{
+		homeMenuItem{title: "Account List", desc: "Browse accounts and addresses", page: "accounts"},
+		homeMenuItem{title: "RPC Settings", desc: "Manage RPC endpoints", page: "settings"},
+		homeMenuItem{title: "dApp Browser", desc: "Browse saved dApps", page: "dapps"},
+	}
 
-	m.homeMenuForm = huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Options(
-					huh.NewOption("Account List", "accounts"),
-					huh.NewOption("RPC Settings", "settings"),
-					huh.NewOption("dApp Browser", "dapps"),
-				).
-				Title("Main Menu").
-				Description("Select a view to navigate to").
-				Value(&home.TempSelection),
-		),
-	).WithTheme(huh.ThemeCatppuccin())
+	delegate := list.NewDefaultDelegate()
+	delegate.ShowDescription = true
+	delegate.Styles.NormalTitle = lipgloss.NewStyle().Foreground(cText)
+	delegate.Styles.NormalDesc = lipgloss.NewStyle().Foreground(cMuted)
+	delegate.Styles.SelectedTitle = lipgloss.NewStyle().Foreground(cAccent2).Bold(true)
+	delegate.Styles.SelectedDesc = lipgloss.NewStyle().Foreground(cAccent2)
+	delegate.Styles.DimmedTitle = lipgloss.NewStyle().Foreground(cMuted)
+	delegate.Styles.DimmedDesc = lipgloss.NewStyle().Foreground(cMuted)
+	delegate.Styles.FilterMatch = lipgloss.NewStyle().Underline(true).Foreground(cAccent)
 
-	m.homeMenuForm.Init()
+	menu := list.New(items, delegate, max(0, m.w-6), max(0, m.h-12))
+	menu.SetShowTitle(false)
+	menu.SetShowStatusBar(false)
+	menu.SetShowPagination(false)
+	menu.SetShowHelp(false)
+	menu.SetFilteringEnabled(true)
+	menu.Styles.FilterPrompt = lipgloss.NewStyle().Foreground(cAccent)
+	menu.Styles.FilterCursor = lipgloss.NewStyle().Foreground(cAccent2)
+	menu.Styles.NoItems = lipgloss.NewStyle().Foreground(cMuted)
+
+	m.homeMenu = menu
+	m.homeMenuReady = true
 }
 
 func (m *model) createAddRPCForm() {
@@ -646,16 +668,15 @@ func (m *model) createEditDappForm(idx int) {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
-	// Handle home menu form updates first
-	if m.activePage == pageHome && m.homeMenuForm != nil {
-		form, cmd := m.homeMenuForm.Update(msg)
-		if f, ok := form.(*huh.Form); ok {
-			m.homeMenuForm = f
-
-			// Check if form is completed
-			if m.homeMenuForm.State == huh.StateCompleted {
-				// Navigate to selected page
-				switch home.TempSelection {
+	if m.activePage == pageHome {
+		if !m.homeMenuReady {
+			m.createHomeMenuList()
+		}
+		var cmd tea.Cmd
+		m.homeMenu, cmd = m.homeMenu.Update(msg)
+		if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.String() == "enter" && m.homeMenu.FilterState() != list.Filtering {
+			if item, ok := m.homeMenu.SelectedItem().(homeMenuItem); ok {
+				switch item.page {
 				case "accounts":
 					m.activePage = pageWallets
 				case "settings":
@@ -665,17 +686,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.activePage = pageDappBrowser
 					m.dappMode = "list"
 				}
-				// Reset form for next time
-				m.createHomeMenuForm()
-				return m, nil
 			}
-
-			// Check if form was aborted (ESC pressed)
-			if m.homeMenuForm.State == huh.StateAborted {
-				// Stay on home or handle as needed
-				m.createHomeMenuForm()
-				return m, nil
-			}
+			m.createHomeMenuList()
+			return m, nil
 		}
 		return m, cmd
 	}
@@ -835,6 +848,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.logReady {
 				m.updateLogViewport()
 			}
+		}
+
+		if m.homeMenuReady {
+			m.homeMenu.SetSize(max(0, m.w-6), max(0, m.h-12))
 		}
 
 		return m, nil
@@ -1004,7 +1021,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "h":
 				m.activePage = pageHome
-				m.createHomeMenuForm()
+				m.createHomeMenuList()
 				return m, nil
 
 			case "esc":
@@ -1489,16 +1506,19 @@ func (m model) View() string {
 }
 
 func (m model) renderHome() string {
-	if m.homeMenuForm != nil {
-		return m.homeMenuForm.View()
+	header := titleStyle.Render("Main Menu")
+	subtitle := lipgloss.NewStyle().Foreground(cMuted).Render("Select a view to navigate to")
+	if m.homeMenuReady {
+		return header + "\n" + subtitle + "\n\n" + m.homeMenu.View()
 	}
-	return "Loading menu..."
+	return header + "\n" + subtitle + "\n\n" + "Loading menu..."
 }
 
 func (m model) navHome() string {
 	left := strings.Join([]string{
 		key("↑/↓") + " select",
 		key("Enter") + " go",
+		key("/") + " search",
 		key("l") + " debug log",
 		key("Esc") + " quit",
 	}, "   ")
