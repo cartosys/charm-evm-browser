@@ -1,18 +1,19 @@
 package rpc
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"math/big"
 	"sort"
 	"strings"
 	"time"
-	"encoding/hex"
-
-	"github.com/ethereum/go-ethereum/core/types"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
+	qrterminal "github.com/mdp/qrterminal/v3"
 )
 
 // Client wraps an Ethereum RPC client
@@ -208,4 +209,19 @@ func PackageTransaction(fromAddress common.Address, toAddress common.Address, am
 
 	// 4. Return as a hex string for later use
 	return hex.EncodeToString(rawTxBytes), nil
+}
+
+// GenerateQRCode converts a string into a QR code representation for terminal display.
+// Returns the QR code as a string that can be rendered in the TUI.
+func GenerateQRCode(data string) string {
+	var buf bytes.Buffer
+	config := qrterminal.Config{
+		Level:     qrterminal.L,
+		Writer:    &buf,
+		BlackChar: qrterminal.BLACK,
+		WhiteChar: qrterminal.WHITE,
+		QuietZone: 1,
+	}
+	qrterminal.GenerateWithConfig(data, config)
+	return buf.String()
 }

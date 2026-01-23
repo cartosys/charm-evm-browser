@@ -1704,6 +1704,12 @@ func (m model) View() string {
 			} else {
 				// Display the transaction hex
 				txResultContent += lipgloss.NewStyle().Foreground(lipgloss.Color("#00FF00")).Render("Raw Transaction (RLP Hex):") + "\n\n"
+				
+				// Generate and display QR code
+				qrCode := rpc.GenerateQRCode("0x" + m.txResultHex)
+				qrStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#874BFD"))
+				txResultContent += qrStyle.Render(qrCode) + "\n"
+				
 				// Wrap hex string for better readability
 				wrappedHex := ""
 				for i, char := range m.txResultHex {
