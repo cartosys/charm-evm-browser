@@ -181,6 +181,12 @@ type model struct {
 
 	// split view flag for wallets page
 	detailsInWallets bool // when true, show details panel alongside wallet list
+
+	// delete confirmation dialog
+	showDeleteDialog      bool
+	deleteDialogAddr      string
+	deleteDialogIdx       int
+	deleteDialogYesSelected bool // true = Yes button, false = No button
 }
 
 // -------------------- INIT --------------------
@@ -908,6 +914,57 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case pageWallets:
+			// Handle delete confirmation dialog
+			if m.showDeleteDialog {
+				switch msg.String() {
+				case "left", "right":
+					// Toggle between Yes and No buttons
+					m.deleteDialogYesSelected = !m.deleteDialogYesSelected
+					return m, nil
+				case "enter":
+					// Execute based on selected button
+					if m.deleteDialogYesSelected {
+						// Confirm deletion (Yes button)
+						idx := m.deleteDialogIdx
+						deletedAddr := m.deleteDialogAddr
+						m.accounts = append(m.accounts[:idx], m.accounts[idx+1:]...)
+						// Update selected index
+						if m.selectedWallet >= len(m.accounts) && m.selectedWallet > 0 {
+							m.selectedWallet--
+						}
+						// Update highlighted address and check if active was deleted
+						if len(m.accounts) > 0 {
+							m.highlightedAddress = m.accounts[m.selectedWallet].Address
+							// Update active address if needed
+							m.activeAddress = ""
+							for _, w := range m.accounts {
+								if w.Active {
+									m.activeAddress = w.Address
+									break
+								}
+							}
+						} else {
+							m.highlightedAddress = ""
+							m.activeAddress = ""
+						}
+						// Save wallets to config
+						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.accounts, Dapps: m.dapps})
+						m.addLog("warning", fmt.Sprintf("Deleted wallet `%s`", helpers.ShortenAddr(deletedAddr)))
+						m.showDeleteDialog = false
+						// Load details for the newly selected wallet if split view is enabled
+						return m, m.loadSelectedWalletDetails()
+					} else {
+						// Cancel deletion (No button)
+						m.showDeleteDialog = false
+						return m, nil
+					}
+				case "esc":
+					// Cancel deletion
+					m.showDeleteDialog = false
+					return m, nil
+				}
+				return m, nil
+			}
 			// Set initial highlighted address and active address
 			if len(m.accounts) > 0 {
 				m.highlightedAddress = m.accounts[m.selectedWallet].Address
@@ -971,22 +1028,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selectedWallet--
 					if len(m.accounts) > 0 {
 						m.highlightedAddress = m.accounts[m.selectedWallet].Address
-						// If split view is enabled, load details for newly selected wallet
-						if m.detailsInWallets {
-							addr := m.accounts[m.selectedWallet].Address
-							// Check if we have cached details
-							cachedDetails, hasCached := m.detailsCache[strings.ToLower(addr)]
-							if hasCached {
-								m.details = cachedDetails
-								m.loading = false
-							} else {
-								// Load fresh details
-								m.loading = true
-								m.details = walletDetails{Address: addr}
-								ethAddr := common.HexToAddress(addr)
-								return m, loadDetails(m.ethClient, ethAddr, m.tokenWatch)
-							}
-						}
 					}
 				}
 				return m, nil
@@ -996,22 +1037,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selectedWallet++
 					if len(m.accounts) > 0 {
 						m.highlightedAddress = m.accounts[m.selectedWallet].Address
-						// If split view is enabled, load details for newly selected wallet
-						if m.detailsInWallets {
-							addr := m.accounts[m.selectedWallet].Address
-							// Check if we have cached details
-							cachedDetails, hasCached := m.detailsCache[strings.ToLower(addr)]
-							if hasCached {
-								m.details = cachedDetails
-								m.loading = false
-							} else {
-								// Load fresh details
-								m.loading = true
-								m.details = walletDetails{Address: addr}
-								ethAddr := common.HexToAddress(addr)
-								return m, loadDetails(m.ethClient, ethAddr, m.tokenWatch)
-							}
-						}
 					}
 				}
 				return m, nil
@@ -1086,37 +1111,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, loadDetails(m.ethClient, ethAddr, m.tokenWatch)
 
 			case "d":
-				// delete selected
+				// Show delete confirmation dialog
 				if len(m.accounts) == 0 {
 					return m, nil
 				}
-				idx := m.selectedWallet
-				deletedAddr := m.accounts[idx].Address
-				m.accounts = append(m.accounts[:idx], m.accounts[idx+1:]...)
-				// Update selected index
-				if m.selectedWallet >= len(m.accounts) && m.selectedWallet > 0 {
-					m.selectedWallet--
-				}
-				// Update highlighted address and check if active was deleted
-				if len(m.accounts) > 0 {
-					m.highlightedAddress = m.accounts[m.selectedWallet].Address
-					// Update active address if needed
-					m.activeAddress = ""
-					for _, w := range m.accounts {
-						if w.Active {
-							m.activeAddress = w.Address
-							break
-						}
-					}
-				} else {
-					m.highlightedAddress = ""
-					m.activeAddress = ""
-				}
-				// Save wallets to config
-				config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.accounts, Dapps: m.dapps})
-				m.addLog("warning", fmt.Sprintf("Deleted wallet `%s`", helpers.ShortenAddr(deletedAddr)))
-				// Load details for the newly selected wallet if split view is enabled
-				return m, m.loadSelectedWalletDetails()
+				m.showDeleteDialog = true
+				m.deleteDialogYesSelected = true // Default to Yes button
+				m.deleteDialogIdx = m.selectedWallet
+				m.deleteDialogAddr = m.accounts[m.selectedWallet].Address
+				return m, nil
 			}
 			return m, nil
 
@@ -1308,6 +1311,55 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // -------------------- VIEW --------------------
 
+func (m model) renderDeleteDialog() string {
+	var (
+		dialogBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#874BFD")).
+			Padding(1, 0).
+			BorderTop(true).
+			BorderLeft(true).
+			BorderRight(true).
+			BorderBottom(true)
+
+		buttonStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFF7DB")).
+			Background(lipgloss.Color("#888B7E")).
+			Padding(0, 3).
+			MarginTop(1)
+
+		activeButtonStyle = buttonStyle.Copy().
+			Foreground(lipgloss.Color("#FFF7DB")).
+			Background(lipgloss.Color("#F25D94")).
+			MarginRight(2).
+			Underline(true)
+	)
+	msg := helpers.FadeString("Are you sure you want to delete the account " + helpers.ShortenAddr(m.deleteDialogAddr) + "?", "#F25D94", "#EDFF82")
+	question := lipgloss.NewStyle().Width(50).Align(lipgloss.Center).Render(msg)
+	
+	// Apply active style to the selected button
+	var okButton, cancelButton string
+	if m.deleteDialogYesSelected {
+		okButton = activeButtonStyle.Render("Yes")
+		cancelButton = buttonStyle.Render("No")
+	} else {
+		okButton = buttonStyle.Copy().MarginRight(2).Render("Yes")
+		cancelButton = activeButtonStyle.Copy().MarginRight(0).Render("No")
+	}
+
+	buttons := lipgloss.JoinHorizontal(lipgloss.Top, okButton, cancelButton)
+	ui := lipgloss.JoinVertical(lipgloss.Center, question, buttons)
+
+	dialog := dialogBoxStyle.Render(ui)
+
+	// Center the dialog on screen
+	return lipgloss.Place(
+		m.w, m.h,
+		lipgloss.Center, lipgloss.Center,
+		dialog,
+	)
+}
+
 func (m model) globalHeader() string {
 	// Active Address (the one marked with ★)
 	var addrDisplay string
@@ -1468,6 +1520,12 @@ func (m model) View() string {
 			pageContent = panelStyle.Width(max(0, m.w-2)).Render(walletsContent)
 		}
 		nav = wallets.Nav(m.w - 2)
+		
+		// Render delete confirmation dialog overlay
+		if m.showDeleteDialog {
+			// Dialog overlays the current view
+			return m.renderDeleteDialog()
+		}
 
 	case pageDetails:
 		// Convert local walletDetails to rpc.WalletDetails
