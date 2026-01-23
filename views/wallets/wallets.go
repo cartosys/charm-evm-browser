@@ -10,6 +10,13 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// ClickableArea represents a clickable region for mouse support
+type ClickableArea struct {
+	X, Y          int
+	Width, Height int
+	Address       string
+}
+
 // Nav returns the navigation bar for wallets view
 func Nav(width int) string {
 	left := strings.Join([]string{
@@ -29,13 +36,14 @@ func Nav(width int) string {
 }
 
 // RenderList renders the wallet list
-func RenderList(wallets []config.WalletEntry, selectedIdx int) (string, int, int) {
+func RenderList(wallets []config.WalletEntry, selectedIdx int) (string, []ClickableArea, int) {
 	var listItems []string
+	var clickableAreas []ClickableArea
 	currentY := 9 // Starting Y position
 
 	if len(wallets) == 0 {
 		listItems = append(listItems, lipgloss.NewStyle().Foreground(styles.CMuted).Render("No wallets added yet. Press 'a' to add one."))
-		return strings.Join(listItems, "\n\n"), 0, currentY
+		return strings.Join(listItems, "\n\n"), clickableAreas, currentY
 	}
 
 	for i, wallet := range wallets {
@@ -64,23 +72,41 @@ func RenderList(wallets []config.WalletEntry, selectedIdx int) (string, int, int
 			shortAddr = "✓ " + shortAddr
 		}
 		listItems = append(listItems, marker+itemStyle.Render(shortAddr)+"\n  "+fullAddr)
-		currentY += 3 // Account for 2 lines + blank line
+
+		// Register clickable areas
+		clickableAreas = append(clickableAreas, ClickableArea{
+			X:       4,
+			Y:       currentY,
+			Width:   lipgloss.Width(shortAddr) + 2,
+			Height:  1,
+			Address: wallet.Address,
+		})
+		currentY++
+
+		clickableAreas = append(clickableAreas, ClickableArea{
+			X:       4,
+			Y:       currentY,
+			Width:   42,
+			Height:  1,
+			Address: wallet.Address,
+		})
+		currentY += 2
 	}
 
-	return strings.Join(listItems, "\n\n"), 0, currentY
+	return strings.Join(listItems, "\n\n"), clickableAreas, currentY
 }
 
 // Render renders the full wallets view
-func Render(wallets []config.WalletEntry, selectedIdx int, addError string) string {
+func Render(wallets []config.WalletEntry, selectedIdx int, addError string) (string, []ClickableArea) {
 	header := styles.TitleStyle.Render("Account List")
 	subtitle := lipgloss.NewStyle().Foreground(styles.CMuted).Render("Browse accounts and addresses")
 
-	listView, _, _ := RenderList(wallets, selectedIdx)
+	listView, clickableAreas, _ := RenderList(wallets, selectedIdx)
 
 	statusBar := lipgloss.NewStyle().Foreground(styles.CMuted).Render(
 		fmt.Sprintf("%d wallets", len(wallets)),
 	)
 
 	content := header + "\n" + subtitle + "\n\n" + listView + "\n\n" + statusBar
-	return content
+	return content, clickableAreas
 }
