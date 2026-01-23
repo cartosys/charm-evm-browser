@@ -178,6 +178,9 @@ type model struct {
 	logEntries  []string
 	logViewport viewport.Model
 	logReady    bool
+
+	// split view flag for wallets page
+	detailsInWallets bool // when true, show details panel alongside wallet list
 }
 
 // -------------------- INIT --------------------
@@ -271,6 +274,7 @@ func newModel() model {
 		dapps:          cfg.Dapps,
 		dappMode:       "list",
 		selectedDappIdx: 0,
+		detailsInWallets: true, // Enable split panel view by default
 	}
 
 	return m
@@ -390,6 +394,28 @@ func (m *model) addLog(logType, message string) {
 
 	// Update viewport content
 	m.updateLogViewport()
+}
+
+// loadSelectedWalletDetails loads details for the currently selected wallet if split view is enabled
+func (m *model) loadSelectedWalletDetails() tea.Cmd {
+	if !m.detailsInWallets || len(m.accounts) == 0 {
+		return nil
+	}
+	
+	addr := m.accounts[m.selectedWallet].Address
+	// Check if we have cached details
+	cachedDetails, hasCached := m.detailsCache[strings.ToLower(addr)]
+	if hasCached {
+		m.details = cachedDetails
+		m.loading = false
+		return nil
+	}
+	
+	// Load fresh details
+	m.loading = true
+	m.details = walletDetails{Address: addr}
+	ethAddr := common.HexToAddress(addr)
+	return loadDetails(m.ethClient, ethAddr, m.tokenWatch)
 }
 
 // updateLogViewport refreshes the viewport content with rendered markdown
@@ -631,6 +657,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				switch home.TempSelection {
 				case "accounts":
 					m.activePage = pageWallets
+					// Load details for selected wallet if split view enabled
+					return m, m.loadSelectedWalletDetails()
 				case "settings":
 					m.activePage = pageSettings
 					m.settingsMode = "list"
@@ -925,23 +953,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						// Save wallets to config
 						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.accounts, Dapps: m.dapps})
 						m.addLog("success", fmt.Sprintf("Added wallet `%s`", helpers.ShortenAddr(newAddr)))
-						return m, nil
-					}
-					// invalid -> keep input, maybe later show toast
-					return m, nil
-
-				case "esc":
-					m.adding = false
-					m.input.SetValue("")
-					m.input.Blur()
-					m.addError = ""
-					return m, nil
-
-				case "ctrl+v":
-					// Paste from clipboard
-					clipContent, err := clipboard.ReadAll()
-					if err == nil {
-						m.input.SetValue(strings.TrimSpace(clipContent))
+					// Load details for the newly added wallet if split view is enabled
+					return m, m.loadSelectedWalletDetails()
 					}
 					return m, nil
 				}
@@ -958,6 +971,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selectedWallet--
 					if len(m.accounts) > 0 {
 						m.highlightedAddress = m.accounts[m.selectedWallet].Address
+						// If split view is enabled, load details for newly selected wallet
+						if m.detailsInWallets {
+							addr := m.accounts[m.selectedWallet].Address
+							// Check if we have cached details
+							cachedDetails, hasCached := m.detailsCache[strings.ToLower(addr)]
+							if hasCached {
+								m.details = cachedDetails
+								m.loading = false
+							} else {
+								// Load fresh details
+								m.loading = true
+								m.details = walletDetails{Address: addr}
+								ethAddr := common.HexToAddress(addr)
+								return m, loadDetails(m.ethClient, ethAddr, m.tokenWatch)
+							}
+						}
 					}
 				}
 				return m, nil
@@ -967,6 +996,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selectedWallet++
 					if len(m.accounts) > 0 {
 						m.highlightedAddress = m.accounts[m.selectedWallet].Address
+						// If split view is enabled, load details for newly selected wallet
+						if m.detailsInWallets {
+							addr := m.accounts[m.selectedWallet].Address
+							// Check if we have cached details
+							cachedDetails, hasCached := m.detailsCache[strings.ToLower(addr)]
+							if hasCached {
+								m.details = cachedDetails
+								m.loading = false
+							} else {
+								// Load fresh details
+								m.loading = true
+								m.details = walletDetails{Address: addr}
+								ethAddr := common.HexToAddress(addr)
+								return m, loadDetails(m.ethClient, ethAddr, m.tokenWatch)
+							}
+						}
 					}
 				}
 				return m, nil
@@ -986,6 +1031,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.activeAddress = m.accounts[m.selectedWallet].Address
 					config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.accounts, Dapps: m.dapps})
 					m.addLog("info", fmt.Sprintf("Activated wallet `%s`", helpers.ShortenAddr(m.activeAddress)))
+					
+					// If split view is enabled, refresh details for the newly activated wallet
+					if m.detailsInWallets {
+						addr := m.accounts[m.selectedWallet].Address
+						m.loading = true
+						m.details = walletDetails{Address: addr}
+						ethAddr := common.HexToAddress(addr)
+						return m, loadDetails(m.ethClient, ethAddr, m.tokenWatch)
+					}
 				}
 				return m, nil
 
@@ -1061,7 +1115,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Save wallets to config
 				config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.accounts, Dapps: m.dapps})
 				m.addLog("warning", fmt.Sprintf("Deleted wallet `%s`", helpers.ShortenAddr(deletedAddr)))
-				return m, nil
+				// Load details for the newly selected wallet if split view is enabled
+				return m, m.loadSelectedWalletDetails()
 			}
 			return m, nil
 
@@ -1071,7 +1126,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				switch msg.String() {
 				case "esc", "backspace":
 					m.activePage = pageWallets
-					return m, nil
+					// Load details for selected wallet if split view enabled
+					return m, m.loadSelectedWalletDetails()
 
 				case "r":
 					// refresh
@@ -1094,7 +1150,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				switch msg.String() {
 				case "esc", "backspace":
 					m.activePage = pageWallets
-					return m, nil
+					// Load details for selected wallet if split view enabled
+					return m, m.loadSelectedWalletDetails()
 
 				case "up", "k":
 					if m.selectedDappIdx > 0 {
@@ -1141,7 +1198,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				switch msg.String() {
 				case "esc", "backspace":
 					m.activePage = pageWallets
-					return m, nil
+					// Load details for selected wallet if split view enabled
+					return m, m.loadSelectedWalletDetails()
 
 				case "a":
 					m.settingsMode = "add"
@@ -1379,7 +1437,36 @@ func (m model) View() string {
 			walletsContent += addBoxView
 		}
 		
-		pageContent = panelStyle.Width(max(0, m.w-2)).Render(walletsContent)
+		// If detailsInWallets is enabled and we have a selected wallet, show split view
+		if m.detailsInWallets && len(m.accounts) > 0 {
+			// Convert local walletDetails to rpc.WalletDetails
+			rpcDetails := rpc.WalletDetails{
+				Address:    m.details.Address,
+				EthWei:     m.details.EthWei,
+				LoadedAt:   m.details.LoadedAt,
+				ErrMessage: m.details.ErrMessage,
+			}
+			for _, t := range m.details.Tokens {
+				rpcDetails.Tokens = append(rpcDetails.Tokens, rpc.TokenBalance{
+					Symbol:   t.Symbol,
+					Decimals: t.Decimals,
+					Balance:  t.Balance,
+				})
+			}
+
+			detailsContent := details.Render(rpcDetails, m.accounts, m.loading, m.copiedMsg, m.spin.View())
+			
+			// Calculate panel widths (split 40/60)
+			listWidth := max(0, (m.w*4)/10-2)
+			detailsWidth := max(0, (m.w*6)/10-2)
+			
+			leftPanel := panelStyle.Width(listWidth).Render(walletsContent)
+			rightPanel := panelStyle.Width(detailsWidth).Render(detailsContent)
+			
+			pageContent = lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel)
+		} else {
+			pageContent = panelStyle.Width(max(0, m.w-2)).Render(walletsContent)
+		}
 		nav = wallets.Nav(m.w - 2)
 
 	case pageDetails:
