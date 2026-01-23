@@ -16,11 +16,11 @@ import (
 	// View packages - ready to use when delegating rendering
 	"charm-wallet-tui/views/dapps"
 	"charm-wallet-tui/views/details"
+	"charm-wallet-tui/views/home"
 	"charm-wallet-tui/views/settings"
 	"charm-wallet-tui/views/wallets"
 
 	"github.com/atotto/clipboard"
-	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -95,15 +95,7 @@ func (w walletItem) Title() string       { return helpers.ShortenAddr(w.addr) }
 func (w walletItem) Description() string { return w.addr }
 func (w walletItem) FilterValue() string { return w.addr }
 
-type homeMenuItem struct {
-	title string
-	desc  string
-	page  string
-}
 
-func (h homeMenuItem) Title() string       { return h.title }
-func (h homeMenuItem) Description() string { return h.desc }
-func (h homeMenuItem) FilterValue() string { return h.title + " " + h.desc }
 
 type tokenBalance struct {
 	Symbol   string
@@ -127,7 +119,7 @@ type model struct {
 	activePage page
 
 	// main list
-	wallets        []config.WalletEntry
+	accounts        []config.WalletEntry
 	selectedWallet int
 
 	// add-wallet input
@@ -167,9 +159,8 @@ type model struct {
 	dappMode        string // "list", "add", "edit"
 	selectedDappIdx int
 
-	// home menu
-	homeMenu      list.Model
-	homeMenuReady bool
+	// home form
+	homeForm *huh.Form
 
 	// nickname editing
 	nicknaming bool
@@ -200,14 +191,14 @@ func newModel() model {
 	cfg := config.Load(configPath)
 
 	// Load wallet entries from config
-	wallets := cfg.Wallets
-	if wallets == nil {
-		wallets = []config.WalletEntry{}
+	accounts := cfg.Wallets
+	if accounts == nil {
+		accounts = []config.WalletEntry{}
 	}
 
 	// Find active wallet or default to first
 	selectedIdx := 0
-	for i, w := range wallets {
+	for i, w := range accounts {
 		if w.Active {
 			selectedIdx = i
 			break
@@ -263,7 +254,7 @@ func newModel() model {
 
 	m := model{
 		activePage:     pageWallets,
-		wallets:        wallets,
+		accounts:       accounts,
 		selectedWallet: selectedIdx,
 		adding:         false,
 		input:          in,
@@ -283,10 +274,10 @@ func newModel() model {
 	}
 
 	// Set initial highlighted address and active address
-	if len(wallets) > 0 {
-		m.highlightedAddress = wallets[selectedIdx].Address
+	if len(accounts) > 0 {
+		m.highlightedAddress = accounts[selectedIdx].Address
 		// Find the active wallet (marked with ★)
-		for _, w := range wallets {
+		for _, w := range accounts {
 			if w.Active {
 				m.activeAddress = w.Address
 				break
@@ -444,43 +435,7 @@ func (m *model) updateLogViewport() {
 	m.logViewport.GotoBottom()
 }
 
-func (m *model) createHomeMenuList() {
-	items := []list.Item{
-		homeMenuItem{title: "Account List", desc: "Browse accounts and addresses", page: "accounts"},
-		homeMenuItem{title: "RPC Settings", desc: "Manage RPC endpoints", page: "settings"},
-		homeMenuItem{title: "dApp Browser", desc: "Browse saved dApps", page: "dapps"},
-	}
 
-	delegate := list.NewDefaultDelegate()
-	delegate.ShowDescription = true
-	delegate.Styles.NormalTitle = lipgloss.NewStyle().Foreground(cText)
-	delegate.Styles.NormalDesc = lipgloss.NewStyle().Foreground(cMuted)
-	delegate.Styles.SelectedTitle = lipgloss.NewStyle().Foreground(cAccent2).Bold(true)
-	delegate.Styles.SelectedDesc = lipgloss.NewStyle().Foreground(cAccent2)
-	delegate.Styles.DimmedTitle = lipgloss.NewStyle().Foreground(cMuted)
-	delegate.Styles.DimmedDesc = lipgloss.NewStyle().Foreground(cMuted)
-	delegate.Styles.FilterMatch = lipgloss.NewStyle().Underline(true).Foreground(cAccent)
-
-	// Calculate available height:
-	// - Global header: ~5 lines
-	// - Page title + subtitle: ~3 lines
-	// - Nav bar: ~2 lines
-	// - Debug log reserve: 15 lines
-	// Total overhead: ~25 lines
-	menuHeight := max(0, m.h-25)
-	menu := list.New(items, delegate, max(0, m.w-6), menuHeight)
-	menu.SetShowTitle(false)
-	menu.SetShowStatusBar(false)
-	menu.SetShowPagination(false)
-	menu.SetShowHelp(false)
-	menu.SetFilteringEnabled(true)
-	menu.Styles.FilterPrompt = lipgloss.NewStyle().Foreground(cAccent)
-	menu.Styles.FilterCursor = lipgloss.NewStyle().Foreground(cAccent2)
-	menu.Styles.NoItems = lipgloss.NewStyle().Foreground(cMuted)
-
-	m.homeMenu = menu
-	m.homeMenuReady = true
-}
 
 func (m *model) createAddRPCForm() {
 	tempRPCFormName = ""
@@ -536,7 +491,7 @@ func (m *model) createEditRPCForm(idx int) {
 func (m *model) createNicknameForm() {
 	// Find current wallet's nickname
 	tempNicknameField = ""
-	for _, w := range m.wallets {
+	for _, w := range m.accounts {
 		if strings.EqualFold(w.Address, m.details.Address) {
 			tempNicknameField = w.Name
 			break
@@ -676,14 +631,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	if m.activePage == pageHome {
-		if !m.homeMenuReady {
-			m.createHomeMenuList()
+		if m.homeForm == nil {
+			m.homeForm = home.CreateForm()
 		}
-		var cmd tea.Cmd
-		m.homeMenu, cmd = m.homeMenu.Update(msg)
-		if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.String() == "enter" && m.homeMenu.FilterState() != list.Filtering {
-			if item, ok := m.homeMenu.SelectedItem().(homeMenuItem); ok {
-				switch item.page {
+		form, cmd := m.homeForm.Update(msg)
+		if f, ok := form.(*huh.Form); ok {
+			m.homeForm = f
+
+			// Check if form is completed
+			if m.homeForm.State == huh.StateCompleted {
+				switch home.TempSelection {
 				case "accounts":
 					m.activePage = pageWallets
 				case "settings":
@@ -693,15 +650,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.activePage = pageDappBrowser
 					m.dappMode = "list"
 				}
+				m.homeForm = nil
+				return m, nil
 			}
-			m.createHomeMenuList()
-			return m, nil
 		}
 		return m, cmd
 	}
 
 	// Handle form updates first (before message switching)
 	if m.activePage == pageDetails && m.nicknaming && m.form != nil {
+		// Intercept ESC key to cancel form
+		if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.String() == "esc" {
+			m.nicknaming = false
+			m.form = nil
+			return m, nil
+		}
+		
 		form, cmd := m.form.Update(msg)
 		if f, ok := form.(*huh.Form); ok {
 			m.form = f
@@ -709,21 +673,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Check if form is completed
 			if m.form.State == huh.StateCompleted {
 				// Save nickname to wallet entry
-				for i := range m.wallets {
-					if strings.EqualFold(m.wallets[i].Address, m.details.Address) {
-						oldName := m.wallets[i].Name
-						m.wallets[i].Name = strings.TrimSpace(tempNicknameField)
-						if oldName == "" && m.wallets[i].Name != "" {
-							m.addLog("success", fmt.Sprintf("Set nickname `%s` for wallet `%s`", m.wallets[i].Name, helpers.ShortenAddr(m.details.Address)))
-						} else if m.wallets[i].Name == "" {
+				for i := range m.accounts {
+					if strings.EqualFold(m.accounts[i].Address, m.details.Address) {
+						oldName := m.accounts[i].Name
+						m.accounts[i].Name = strings.TrimSpace(tempNicknameField)
+						if oldName == "" && m.accounts[i].Name != "" {
+							m.addLog("success", fmt.Sprintf("Set nickname `%s` for wallet `%s`", m.accounts[i].Name, helpers.ShortenAddr(m.details.Address)))
+						} else if m.accounts[i].Name == "" {
 							m.addLog("info", fmt.Sprintf("Cleared nickname for wallet `%s`", helpers.ShortenAddr(m.details.Address)))
 						} else {
-							m.addLog("success", fmt.Sprintf("Updated nickname to `%s` for wallet `%s`", m.wallets[i].Name, helpers.ShortenAddr(m.details.Address)))
+							m.addLog("success", fmt.Sprintf("Updated nickname to `%s` for wallet `%s`", m.accounts[i].Name, helpers.ShortenAddr(m.details.Address)))
 						}
 						break
 					}
 				}
-				config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+				config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.accounts, Dapps: m.dapps})
 				m.nicknaming = false
 				m.form = nil
 				return m, nil
@@ -740,6 +704,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if (m.activePage == pageDetails || m.activePage == pageDappBrowser) && (m.dappMode == "add" || m.dappMode == "edit") && m.form != nil {
+		// Intercept ESC key to cancel form
+		if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.String() == "esc" {
+			m.dappMode = "list"
+			m.form = nil
+			return m, nil
+		}
+		
 		form, cmd := m.form.Update(msg)
 		if f, ok := form.(*huh.Form); ok {
 			m.form = f
@@ -750,7 +721,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if tempDappName != "" && tempDappAddress != "" {
 						newDapp := config.DApp{Name: tempDappName, Address: tempDappAddress, Icon: tempDappIcon, Network: tempDappNetwork}
 						m.dapps = append(m.dapps, newDapp)
-						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.accounts, Dapps: m.dapps})
 						m.addLog("success", fmt.Sprintf("Added dApp: `%s`", tempDappName))
 					}
 				} else if m.dappMode == "edit" {
@@ -759,7 +730,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.dapps[m.selectedDappIdx].Address = tempDappAddress
 						m.dapps[m.selectedDappIdx].Icon = tempDappIcon
 						m.dapps[m.selectedDappIdx].Network = tempDappNetwork
-						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.accounts, Dapps: m.dapps})
 						m.addLog("success", fmt.Sprintf("Updated dApp: `%s`", tempDappName))
 					}
 				}
@@ -789,14 +760,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if tempRPCFormName != "" && tempRPCFormURL != "" {
 						newRPC := config.RPCUrl{Name: tempRPCFormName, URL: tempRPCFormURL, Active: false}
 						m.rpcURLs = append(m.rpcURLs, newRPC)
-						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.accounts, Dapps: m.dapps})
 						m.addLog("success", fmt.Sprintf("Added RPC endpoint: `%s` (%s)", tempRPCFormName, tempRPCFormURL))
 					}
 				} else if m.settingsMode == "edit" {
 					if m.selectedRPCIdx >= 0 && m.selectedRPCIdx < len(m.rpcURLs) {
 						m.rpcURLs[m.selectedRPCIdx].Name = tempRPCFormName
 						m.rpcURLs[m.selectedRPCIdx].URL = tempRPCFormURL
-						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.accounts, Dapps: m.dapps})
 						m.addLog("success", fmt.Sprintf("Updated RPC endpoint: `%s`", tempRPCFormName))
 					}
 				}
@@ -855,12 +826,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.logReady {
 				m.updateLogViewport()
 			}
-		}
-
-		if m.homeMenuReady {
-			// Use same calculation as createHomeMenuList: total overhead ~25 lines
-			menuHeight := max(0, m.h-25)
-			m.homeMenu.SetSize(max(0, m.w-6), menuHeight)
 		}
 
 		return m, nil
@@ -929,7 +894,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						newAddr := common.HexToAddress(val).Hex()
 
 						// Check for duplicates
-						for _, w := range m.wallets {
+						for _, w := range m.accounts {
 							if strings.EqualFold(w.Address, newAddr) {
 								m.addError = "Duplicate address - wallet already exists"
 								m.addErrTime = time.Now()
@@ -944,15 +909,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							Name:    "",
 							Active:  false,
 						}
-						m.wallets = append(m.wallets, newWallet)
-						m.selectedWallet = len(m.wallets) - 1
+						m.accounts = append(m.accounts, newWallet)
+						m.selectedWallet = len(m.accounts) - 1
 						m.highlightedAddress = newAddr
 						m.adding = false
 						m.input.SetValue("")
 						m.input.Blur()
 						m.addError = ""
 						// Save wallets to config
-						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.accounts, Dapps: m.dapps})
 						m.addLog("success", fmt.Sprintf("Added wallet `%s`", helpers.ShortenAddr(newAddr)))
 						return m, nil
 					}
@@ -985,17 +950,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "up", "k":
 				if m.selectedWallet > 0 {
 					m.selectedWallet--
-					if len(m.wallets) > 0 {
-						m.highlightedAddress = m.wallets[m.selectedWallet].Address
+					if len(m.accounts) > 0 {
+						m.highlightedAddress = m.accounts[m.selectedWallet].Address
 					}
 				}
 				return m, nil
 
 			case "down", "j":
-				if m.selectedWallet < len(m.wallets)-1 {
+				if m.selectedWallet < len(m.accounts)-1 {
 					m.selectedWallet++
-					if len(m.wallets) > 0 {
-						m.highlightedAddress = m.wallets[m.selectedWallet].Address
+					if len(m.accounts) > 0 {
+						m.highlightedAddress = m.accounts[m.selectedWallet].Address
 					}
 				}
 				return m, nil
@@ -1007,13 +972,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case " ":
 				// Set selected wallet as active
-				if len(m.wallets) > 0 {
-					for i := range m.wallets {
-						m.wallets[i].Active = (i == m.selectedWallet)
+				if len(m.accounts) > 0 {
+					for i := range m.accounts {
+						m.accounts[i].Active = (i == m.selectedWallet)
 					}
 					// Update active address to the newly activated wallet
-					m.activeAddress = m.wallets[m.selectedWallet].Address
-					config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+					m.activeAddress = m.accounts[m.selectedWallet].Address
+					config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.accounts, Dapps: m.dapps})
 					m.addLog("info", fmt.Sprintf("Activated wallet `%s`", helpers.ShortenAddr(m.activeAddress)))
 				}
 				return m, nil
@@ -1030,17 +995,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "h":
 				m.activePage = pageHome
-				m.createHomeMenuList()
+				m.homeForm = nil
 				return m, nil
 
 			case "esc":
 				return m, tea.Quit
 
 			case "enter":
-				if len(m.wallets) == 0 {
+				if len(m.accounts) == 0 {
 					return m, nil
 				}
-				addr := m.wallets[m.selectedWallet].Address
+				addr := m.accounts[m.selectedWallet].Address
 				m.highlightedAddress = addr
 				m.activePage = pageDetails
 				
@@ -1062,22 +1027,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "d":
 				// delete selected
-				if len(m.wallets) == 0 {
+				if len(m.accounts) == 0 {
 					return m, nil
 				}
 				idx := m.selectedWallet
-				deletedAddr := m.wallets[idx].Address
-				m.wallets = append(m.wallets[:idx], m.wallets[idx+1:]...)
+				deletedAddr := m.accounts[idx].Address
+				m.accounts = append(m.accounts[:idx], m.accounts[idx+1:]...)
 				// Update selected index
-				if m.selectedWallet >= len(m.wallets) && m.selectedWallet > 0 {
+				if m.selectedWallet >= len(m.accounts) && m.selectedWallet > 0 {
 					m.selectedWallet--
 				}
 				// Update highlighted address and check if active was deleted
-				if len(m.wallets) > 0 {
-					m.highlightedAddress = m.wallets[m.selectedWallet].Address
+				if len(m.accounts) > 0 {
+					m.highlightedAddress = m.accounts[m.selectedWallet].Address
 					// Update active address if needed
 					m.activeAddress = ""
-					for _, w := range m.wallets {
+					for _, w := range m.accounts {
 						if w.Active {
 							m.activeAddress = w.Address
 							break
@@ -1088,7 +1053,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.activeAddress = ""
 				}
 				// Save wallets to config
-				config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+				config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.accounts, Dapps: m.dapps})
 				m.addLog("warning", fmt.Sprintf("Deleted wallet `%s`", helpers.ShortenAddr(deletedAddr)))
 				return m, nil
 			}
@@ -1157,7 +1122,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						if m.selectedDappIdx >= len(m.dapps) && m.selectedDappIdx > 0 {
 							m.selectedDappIdx--
 						}
-						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.accounts, Dapps: m.dapps})
 						m.addLog("warning", fmt.Sprintf("Deleted dApp `%s`", deletedDapp))
 					}
 					return m, nil
@@ -1191,7 +1156,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						if m.selectedRPCIdx >= len(m.rpcURLs) && m.selectedRPCIdx > 0 {
 							m.selectedRPCIdx--
 						}
-						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.accounts, Dapps: m.dapps})
 					}
 					return m, nil
 
@@ -1214,7 +1179,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.rpcURLs[i].Active = (i == m.selectedRPCIdx)
 						}
 						m.rpcURL = m.rpcURLs[m.selectedRPCIdx].URL
-						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.wallets, Dapps: m.dapps})
+						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.accounts, Dapps: m.dapps})
 						// Set connecting state and reconnect with new RPC
 						m.rpcConnecting = true
 						m.rpcConnected = false
@@ -1237,7 +1202,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					// Otherwise navigate to wallet details
 					// Find wallet index
-					for i, w := range m.wallets {
+					for i, w := range m.accounts {
 						if strings.EqualFold(w.Address, area.Address) {
 							m.selectedWallet = i
 							break
@@ -1379,12 +1344,15 @@ func (m model) View() string {
 
 	switch m.activePage {
 	case pageHome:
-		homeContent := m.renderHome()
+		if m.homeForm == nil {
+			m.homeForm = home.CreateForm()
+		}
+		homeContent := home.Render(m.homeForm)
 		pageContent = panelStyle.Width(max(0, m.w-2)).Render(homeContent)
-		nav = m.navHome()
+		nav = home.Nav(m.w - 2)
 
 	case pageWallets:
-		walletsContent, _ := wallets.Render(m.wallets, m.selectedWallet, m.addError)
+		walletsContent, _ := wallets.Render(m.accounts, m.selectedWallet, m.addError)
 		
 		// Show add wallet form if in adding mode
 		if m.adding {
@@ -1424,7 +1392,7 @@ func (m model) View() string {
 			})
 		}
 
-		detailsContent := details.Render(rpcDetails, m.wallets, m.loading, m.copiedMsg, m.spin.View())
+		detailsContent := details.Render(rpcDetails, m.accounts, m.loading, m.copiedMsg, m.spin.View())
 		
 		// Show form if in nicknaming mode
 		if m.nicknaming && m.form != nil {
@@ -1475,26 +1443,7 @@ func (m model) View() string {
 	return appStyle.Render(content)
 }
 
-func (m model) renderHome() string {
-	header := titleStyle.Render("Main Menu")
-	subtitle := lipgloss.NewStyle().Foreground(cMuted).Render("Select a view to navigate to")
-	if m.homeMenuReady {
-		return header + "\n" + subtitle + "\n\n" + m.homeMenu.View()
-	}
-	return header + "\n" + subtitle + "\n\n" + "Loading menu..."
-}
 
-func (m model) navHome() string {
-	left := strings.Join([]string{
-		key("↑/↓") + " select",
-		key("Enter") + " go",
-		key("/") + " search",
-		key("l") + " debug log",
-		key("Esc") + " quit",
-	}, "   ")
-
-	return navStyle.Width(max(0, m.w-2)).Render(left)
-}
 
 
 
