@@ -1168,8 +1168,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			switch msg.String() {
 			case "tab":
-				// Don't allow tab navigation when send form is active
-				if m.showSendForm {
+				// Don't allow tab navigation when send form or add wallet form is active
+				if m.showSendForm || m.adding {
 					return m, nil
 				}
 				// Only allow focusing send button if ETH balance > 0
