@@ -125,10 +125,12 @@ type model struct {
 	selectedWallet int
 
 	// add-wallet input
-	adding     bool
-	input      textinput.Model
-	addError   string    // error message when adding wallet (e.g., duplicate)
-	addErrTime time.Time // time when error was shown
+	adding        bool
+	input         textinput.Model // address input
+	nicknameInput textinput.Model // nickname input
+	focusedInput  int             // 0 = address, 1 = nickname
+	addError      string          // error message when adding wallet (e.g., duplicate)
+	addErrTime    time.Time       // time when error was shown
 
 	// details state
 	spin          spinner.Model
@@ -227,15 +229,25 @@ func newModel() model {
 		}
 	}
 
-	// input
+	// input for address
 	in := textinput.New()
 	in.Placeholder = "Paste Public Address 0x…"
-	in.Prompt = "Add wallet: "
+	in.Prompt = "Address: "
 	in.PromptStyle = lipgloss.NewStyle().Foreground(cAccent)
 	in.TextStyle = lipgloss.NewStyle().Foreground(cText)
 	in.Cursor.Style = lipgloss.NewStyle().Foreground(cAccent2)
 	in.CharLimit = 42
 	in.Width = 48
+
+	// input for nickname
+	nicknameIn := textinput.New()
+	nicknameIn.Placeholder = "Optional nickname"
+	nicknameIn.Prompt = "Nickname: "
+	nicknameIn.PromptStyle = lipgloss.NewStyle().Foreground(cAccent)
+	nicknameIn.TextStyle = lipgloss.NewStyle().Foreground(cText)
+	nicknameIn.Cursor.Style = lipgloss.NewStyle().Foreground(cAccent2)
+	nicknameIn.CharLimit = 50
+	nicknameIn.Width = 48
 
 	// spinner
 	sp := spinner.New()
@@ -280,6 +292,8 @@ func newModel() model {
 		selectedWallet: selectedIdx,
 		adding:         false,
 		input:          in,
+		nicknameInput:  nicknameIn,
+		focusedInput:   0,
 		spin:           sp,
 		rpcURL:         activeRPC,
 		tokenWatch:     watch,
@@ -1190,17 +1204,49 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Cancel adding mode
 					m.adding = false
 					m.input.SetValue("")
+					m.nicknameInput.SetValue("")
 					m.input.Blur()
+					m.nicknameInput.Blur()
+					m.focusedInput = 0
 					m.addError = ""
 					return m, nil
 				case "ctrl+v":
-					// Handle Ctrl+v paste explicitly
+					// Handle Ctrl+v paste explicitly to active input
 					text, err := clipboard.ReadAll()
 					if err == nil && text != "" {
-						m.input.SetValue(text)
+						if m.focusedInput == 0 {
+							m.input.SetValue(text)
+						} else {
+							m.nicknameInput.SetValue(text)
+						}
+					}
+					return m, nil
+				case "tab", "shift+tab":
+					// Toggle between address and nickname fields
+					if m.focusedInput == 0 {
+						m.focusedInput = 1
+						m.input.Blur()
+						m.nicknameInput.Focus()
+					} else {
+						m.focusedInput = 0
+						m.nicknameInput.Blur()
+						m.input.Focus()
 					}
 					return m, nil
 				case "enter":
+					// If on address field, move to nickname field
+					if m.focusedInput == 0 {
+						val := strings.TrimSpace(m.input.Value())
+						if helpers.IsValidEthAddress(val) {
+							// Move to nickname field
+							m.focusedInput = 1
+							m.input.Blur()
+							m.nicknameInput.Focus()
+							return m, nil
+						}
+						return m, nil
+					}
+					// If on nickname field, submit the form
 					val := strings.TrimSpace(m.input.Value())
 					if helpers.IsValidEthAddress(val) {
 						newAddr := common.HexToAddress(val).Hex()
@@ -1211,14 +1257,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								m.addError = "Duplicate address - wallet already exists"
 								m.addErrTime = time.Now()
 								m.input.SetValue("")
+								m.nicknameInput.SetValue("")
+								m.focusedInput = 0
+								m.input.Focus()
 								return m, nil
 							}
 						}
 
-						// Create new wallet entry (name can be edited later)
+						// Create new wallet entry with nickname
+						nickname := strings.TrimSpace(m.nicknameInput.Value())
 						newWallet := config.WalletEntry{
 							Address: newAddr,
-							Name:    "",
+							Name:    nickname,
 							Active:  false,
 						}
 						m.accounts = append(m.accounts, newWallet)
@@ -1226,19 +1276,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.highlightedAddress = newAddr
 						m.adding = false
 						m.input.SetValue("")
+						m.nicknameInput.SetValue("")
 						m.input.Blur()
+						m.nicknameInput.Blur()
+						m.focusedInput = 0
 						m.addError = ""
 						// Save wallets to config
 						config.Save(m.configPath, config.Config{RPCURLs: m.rpcURLs, Wallets: m.accounts, Dapps: m.dapps})
-						m.addLog("success", fmt.Sprintf("Added wallet `%s`", helpers.ShortenAddr(newAddr)))
-					// Load details for the newly added wallet if split view is enabled
-					return m, m.loadSelectedWalletDetails()
+						if nickname != "" {
+							m.addLog("success", fmt.Sprintf("Added wallet `%s` with nickname `%s`", helpers.ShortenAddr(newAddr), nickname))
+						} else {
+							m.addLog("success", fmt.Sprintf("Added wallet `%s`", helpers.ShortenAddr(newAddr)))
+						}
+						// Load details for the newly added wallet if split view is enabled
+						return m, m.loadSelectedWalletDetails()
 					}
 					return m, nil
 				}
 
 				var cmd tea.Cmd
-				m.input, cmd = m.input.Update(msg)
+				if m.focusedInput == 0 {
+					m.input, cmd = m.input.Update(msg)
+				} else {
+					m.nicknameInput, cmd = m.nicknameInput.Update(msg)
+				}
 				return m, cmd
 			}
 
@@ -1264,7 +1325,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "a":
 				m.adding = true
+				m.focusedInput = 0
 				m.input.Focus()
+				m.nicknameInput.Blur()
 				return m, nil
 
 			case " ":
@@ -1669,8 +1732,9 @@ func (m model) View() string {
 		
 		// Show add wallet form if in adding mode
 		if m.adding {
-			inputView := m.input.View() + "\n" +
-				hotkeyStyle.Render("Enter") + " save   " +
+			inputView := m.input.View() + "\n" + m.nicknameInput.View() + "\n" +
+				hotkeyStyle.Render("Tab") + " next field   " +
+				hotkeyStyle.Render("Enter") + " next/save   " +
 				hotkeyStyle.Render("Esc") + " cancel   " +
 				hotkeyStyle.Render("Ctrl+v") + " paste"
 
