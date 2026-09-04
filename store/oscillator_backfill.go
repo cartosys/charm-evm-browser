@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"time"
 
 	"charm-wallet-tui/helpers"
 	"charm-wallet-tui/indexer"
 	"charm-wallet-tui/rpc"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
@@ -25,7 +27,45 @@ const (
 	avgBlockTimeSecs        = int64(12) // post-Merge fixed slot time
 	blocksPerDay            = uint64(7_200)
 	calibIntervalBlocks     = blocksPerDay // recalibrate the block-time estimate roughly once per day
+
+	rateLimitMaxRetries = 6
+	rateLimitBaseDelay  = 500 * time.Millisecond
+	rateLimitMaxDelay   = 20 * time.Second
 )
+
+// isRateLimited reports whether err looks like a 429 Too Many Requests
+// response from the RPC provider — go-ethereum's HTTP transport surfaces the
+// status code directly in the error text, the same way the archive-access
+// 403s already seen from public RPC providers do.
+func isRateLimited(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "429")
+}
+
+// retryWithBackoff calls fn, retrying with exponential backoff whenever it
+// fails with a 429 from the RPC provider (up to rateLimitMaxRetries times)
+// instead of losing that chunk's data to a single failed call. Any other
+// error (e.g. an archive-access 403) is returned immediately — this only
+// throttles the specific failure mode that's actually recoverable by waiting.
+func retryWithBackoff[T any](ctx context.Context, emit func(string), label string, fn func() (T, error)) (T, error) {
+	delay := rateLimitBaseDelay
+	for attempt := 1; ; attempt++ {
+		result, err := fn()
+		if err == nil || !isRateLimited(err) || attempt > rateLimitMaxRetries {
+			return result, err
+		}
+		emit(fmt.Sprintf("[Oscillator] rate limited on %s, backing off %s (attempt %d/%d)", label, delay, attempt, rateLimitMaxRetries))
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			var zero T
+			return zero, ctx.Err()
+		}
+		delay *= 2
+		if delay > rateLimitMaxDelay {
+			delay = rateLimitMaxDelay
+		}
+	}
+}
 
 // versionLabel formats a helpers.PoolVersion for progress logging.
 func versionLabel(v helpers.PoolVersion) string {
@@ -111,7 +151,9 @@ func (s *Store) indexOscillatorBackfillWindow(ctx context.Context, httpURL strin
 		}
 		defer client.Close()
 
-		tipHeader, err := client.HeaderByNumber(ctx, nil)
+		tipHeader, err := retryWithBackoff(ctx, emit, "tip header", func() (*types.Header, error) {
+			return client.HeaderByNumber(ctx, nil)
+		})
 		if err != nil {
 			emit(fmt.Sprintf("[Oscillator] ERROR: fetch tip header: %v", err))
 			return
@@ -245,7 +287,10 @@ func (s *Store) indexOscillatorBackfillWindow(ctx context.Context, httpURL strin
 			}
 
 			if chunkStart == fromBlock || chunkEnd-lastCalibBlock >= calibIntervalBlocks {
-				if hdr, err := client.HeaderByNumber(ctx, new(big.Int).SetUint64(chunkEnd)); err == nil {
+				hdr, err := retryWithBackoff(ctx, emit, "calibration header", func() (*types.Header, error) {
+					return client.HeaderByNumber(ctx, new(big.Int).SetUint64(chunkEnd))
+				})
+				if err == nil {
 					calibAnchorBlock = chunkEnd
 					calibAnchorTime = int64(hdr.Time)
 					lastCalibBlock = chunkEnd
@@ -254,7 +299,10 @@ func (s *Store) indexOscillatorBackfillWindow(ctx context.Context, httpURL strin
 
 			chunkSaved := 0
 
-			if v2Events, err := indexer.FetchV2Syncs(ctx, client, v2Addrs, chunkStart, chunkEnd); err != nil {
+			v2Events, err := retryWithBackoff(ctx, emit, "V2 fetch", func() ([]indexer.V2SyncEvent, error) {
+				return indexer.FetchV2Syncs(ctx, client, v2Addrs, chunkStart, chunkEnd)
+			})
+			if err != nil {
 				emit(fmt.Sprintf("[Oscillator] WARN: V2 fetch blocks %d–%d: %v", chunkStart, chunkEnd, err))
 			} else {
 				for _, ev := range v2Events {
@@ -274,7 +322,10 @@ func (s *Store) indexOscillatorBackfillWindow(ctx context.Context, httpURL strin
 				}
 			}
 
-			if v3Events, err := indexer.FetchV3Swaps(ctx, client, v3Addrs, chunkStart, chunkEnd); err != nil {
+			v3Events, err := retryWithBackoff(ctx, emit, "V3 fetch", func() ([]indexer.V3SwapEvent, error) {
+				return indexer.FetchV3Swaps(ctx, client, v3Addrs, chunkStart, chunkEnd)
+			})
+			if err != nil {
 				emit(fmt.Sprintf("[Oscillator] WARN: V3 fetch blocks %d–%d: %v", chunkStart, chunkEnd, err))
 			} else {
 				for _, ev := range v3Events {
@@ -294,7 +345,10 @@ func (s *Store) indexOscillatorBackfillWindow(ctx context.Context, httpURL strin
 				}
 			}
 
-			if v4Events, err := indexer.FetchV4SwapsForPoolIDs(ctx, client, v4IDs, chunkStart, chunkEnd); err != nil {
+			v4Events, err := retryWithBackoff(ctx, emit, "V4 fetch", func() ([]indexer.V4PoolEvent, error) {
+				return indexer.FetchV4SwapsForPoolIDs(ctx, client, v4IDs, chunkStart, chunkEnd)
+			})
+			if err != nil {
 				emit(fmt.Sprintf("[Oscillator] WARN: V4 fetch blocks %d–%d: %v", chunkStart, chunkEnd, err))
 			} else {
 				for _, ev := range v4Events {
