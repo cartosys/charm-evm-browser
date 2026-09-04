@@ -12,9 +12,13 @@ func (m *model) handleDappsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.navigateTo(config.PageWallets)
 
 	case "enter":
-		if m.selectedDappIdx >= 0 && m.selectedDappIdx < len(m.dapps) &&
-			m.dapps[m.selectedDappIdx].Name == "Terra Nullius" {
-			return m, m.navigateTo(config.PageTerraNullius)
+		if m.selectedDappIdx >= 0 && m.selectedDappIdx < len(m.dapps) {
+			switch m.dapps[m.selectedDappIdx].Name {
+			case "Terra Nullius":
+				return m, m.navigateTo(config.PageTerraNullius)
+			case "McClellan Oscillator":
+				return m, m.navigateTo(config.PageOscillator)
+			}
 		}
 		return m, m.navigateTo(config.PageUniswap)
 

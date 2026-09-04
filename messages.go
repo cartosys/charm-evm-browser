@@ -222,3 +222,20 @@ type tokenMetadataMsg struct {
 	totalSupply *big.Int
 	err         error
 }
+
+// oscillatorBackscanLineMsg carries a single progress/error line from the
+// McClellan Oscillator's basket backscan (store.IndexOscillatorBackfill).
+type oscillatorBackscanLineMsg struct {
+	line string
+}
+
+// oscillatorBackscanDoneMsg signals that the backscan channel closed.
+type oscillatorBackscanDoneMsg struct{}
+
+// oscillatorSeriesMsg carries a freshly recomputed McClellan Oscillator
+// series (one value per day after the earliest day with data).
+type oscillatorSeriesMsg struct {
+	days   []string
+	values []float64
+	err    error
+}

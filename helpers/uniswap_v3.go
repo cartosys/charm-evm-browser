@@ -3,6 +3,7 @@ package helpers
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/big"
 	"time"
 
@@ -60,6 +61,20 @@ func v3ReadSqrtPriceX96(ctx context.Context, client *ethclient.Client, poolAddr 
 		return nil, fmt.Errorf("slot0 returned short data: %d bytes", len(data))
 	}
 	return new(big.Int).SetBytes(data[0:32]), nil
+}
+
+// SqrtPriceX96ToPrice converts a Q64.96 sqrtPriceX96 (V3 slot0()/Swap event
+// field) into token0's price in token1 units, decimal-adjusted. Computed in
+// big.Float throughout — sqrtPriceX96 carries far more precision than
+// float64 holds, and squaring after an early truncation to float64 would
+// compound that error. Exported for the oscillator backfill (store package).
+func SqrtPriceX96ToPrice(sqrtPriceX96 *big.Int, decimals0, decimals1 uint8) float64 {
+	q96 := new(big.Float).SetInt(new(big.Int).Lsh(big.NewInt(1), 96))
+	sqrtP := new(big.Float).Quo(new(big.Float).SetInt(sqrtPriceX96), q96)
+	rawPrice := new(big.Float).Mul(sqrtP, sqrtP)
+	decimalAdjust := new(big.Float).SetFloat64(math.Pow(10, float64(int(decimals0)-int(decimals1))))
+	price, _ := new(big.Float).Mul(rawPrice, decimalAdjust).Float64()
+	return price
 }
 
 // v3PriceImpact computes price impact from sqrtPriceX96 before and after.

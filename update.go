@@ -190,6 +190,12 @@ func (m *model) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleENSLookupResult(msg)
 	case ensForwardResolveMsg:
 		return m.handleENSForwardResolve(msg)
+	case oscillatorBackscanLineMsg:
+		return m.handleOscillatorBackscanLine(msg)
+	case oscillatorBackscanDoneMsg:
+		return m.handleOscillatorBackscanDone()
+	case oscillatorSeriesMsg:
+		return m.handleOscillatorSeries(msg)
 	default:
 		if msg, ok := msg.(struct{ clearClipboard bool }); ok && msg.clearClipboard {
 			if time.Since(m.copiedMsgTime) >= 2*time.Second {
@@ -385,6 +391,8 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleTerraKey(msg)
 	case config.PageWatchedTokens:
 		return m.handleWatchedTokensKey(msg)
+	case config.PageOscillator:
+		return m.handleOscillatorKey(msg)
 	}
 	return m, nil
 }

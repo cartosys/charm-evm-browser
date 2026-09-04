@@ -13,6 +13,7 @@ import (
 	"charm-wallet-tui/views/dapps"
 	"charm-wallet-tui/views/details"
 	logview "charm-wallet-tui/views/log"
+	"charm-wallet-tui/views/oscillator"
 	"charm-wallet-tui/views/scrollbar"
 	"charm-wallet-tui/views/settings"
 	"charm-wallet-tui/views/terra"
@@ -845,8 +846,17 @@ func (m *model) renderPage(headerPanel string) (pageContent, nav string) {
 
 	case config.PageWatchedTokens:
 		return m.renderWatchedTokensPage(headerPanel)
+
+	case config.PageOscillator:
+		return m.renderOscillatorPage(headerPanel)
 	}
 	return "", ""
+}
+
+func (m *model) renderOscillatorPage(headerPanel string) (pageContent, nav string) {
+	c, _ := oscillator.Render(m.w-2, m.h-8, m.oscillatorBackfillActive, m.oscillatorDays, m.oscillatorSeries, m.oscillatorSeriesErr)
+	navStr := oscillator.Nav(m.w-2, m.oscillatorBackfillActive)
+	return styles.PanelStyle.Width(m.contentW).Render(c), navStr
 }
 
 func (m *model) renderWatchedTokensPage(headerPanel string) (pageContent, nav string) {

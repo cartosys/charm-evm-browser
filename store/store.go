@@ -146,6 +146,59 @@ CREATE INDEX IF NOT EXISTS idx_v4xfer_token_id ON v4_transfers(token_id);
 CREATE INDEX IF NOT EXISTS idx_v4xfer_block    ON v4_transfers(block);
 `
 
+// v2Migration adds the McClellan Oscillator's swap-history tables. Additive
+// only — no changes to the v1Migration tables above. One unified
+// oscillator_swaps table (not per-version, unlike v4_swaps/v4_donates/etc.)
+// because every version reduces to the same derived fact — a decimal price
+// at a point in time — so the daily-close query is identical regardless of
+// which Uniswap version produced the row.
+const v2Migration = `
+CREATE TABLE IF NOT EXISTS oscillator_pool_refs (
+	token_addr        TEXT    NOT NULL PRIMARY KEY,
+	version           INTEGER NOT NULL,
+	pool_key          TEXT    NOT NULL,
+	ref_token         TEXT    NOT NULL,
+	token_decimals    INTEGER NOT NULL,
+	ref_decimals      INTEGER NOT NULL,
+	token_is_token0   INTEGER NOT NULL,
+	v3_fee            INTEGER NOT NULL DEFAULT 0,
+	v4_hooks          TEXT    NOT NULL DEFAULT '',
+	v4_fee            INTEGER NOT NULL DEFAULT 0,
+	v4_tick_spacing   INTEGER NOT NULL DEFAULT 0,
+	resolved_at_block INTEGER NOT NULL,
+	resolved_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS oscillator_swaps (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	token_addr TEXT    NOT NULL REFERENCES oscillator_pool_refs(token_addr),
+	block      INTEGER NOT NULL,
+	block_time INTEGER NOT NULL,
+	tx_hash    TEXT    NOT NULL,
+	log_index  INTEGER NOT NULL,
+	price      TEXT    NOT NULL,
+	seen_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	UNIQUE(tx_hash, log_index)
+);
+CREATE INDEX IF NOT EXISTS idx_oscswaps_token_time ON oscillator_swaps(token_addr, block_time);
+CREATE INDEX IF NOT EXISTS idx_oscswaps_block       ON oscillator_swaps(block);
+`
+
+func migrateToV2(db *sql.DB) error {
+	var ver int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&ver); err != nil {
+		return err
+	}
+	if ver >= 2 {
+		return nil
+	}
+	if _, err := db.Exec(v2Migration); err != nil {
+		return err
+	}
+	_, err := db.Exec("PRAGMA user_version = 2")
+	return err
+}
+
 // Store wraps a SQLite database for persisting indexed events.
 type Store struct {
 	db *sql.DB
@@ -163,6 +216,10 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	if err := migrateToV1(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := migrateToV2(db); err != nil {
 		db.Close()
 		return nil, err
 	}

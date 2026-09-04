@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"image"
 	"math/big"
 	"os"
@@ -271,6 +272,14 @@ type model struct {
 	terraNullMsgInput      textinput.Model
 	terraNullFormFocused   int    // 0=message input, 1=submit button
 	terraNullMsgError      string
+
+	// McClellan Oscillator page state
+	oscillatorBackfillActive bool
+	oscillatorLines          <-chan string
+	oscillatorCancel         context.CancelFunc
+	oscillatorDays           []string
+	oscillatorSeries         []float64
+	oscillatorSeriesErr      string
 
 	// Pool Event Monitor state
 	poolEventMonitorActive bool

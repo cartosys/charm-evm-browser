@@ -64,6 +64,7 @@ const (
 	PageUniswap
 	PageTerraNullius
 	PageWatchedTokens
+	PageOscillator
 )
 
 // ClickableArea represents a clickable region on screen for addresses
@@ -149,6 +150,13 @@ func DefaultDapps() []DApp {
 			Description: "The Ethereum Message Board from Block 49,880 (August 7, 2015) — Still Getting Claims\n\n" +
 				"Two weeks after Ethereum's genesis block, a Reddit user named \"Semiel\" deployed one of the earliest smart contracts on the network: TerraNullius.\n\n" +
 				"What it does: Anyone can \"claim\" a hex coordinate and attach a message to it — a permanent, uncensorable message board on the blockchain. No tokens, no governance, no economic incentive. Just messages, forever.",
+		},
+		{
+			Name:    "McClellan Oscillator",
+			Icon:    "📈",
+			Network: "Mainnet",
+			Description: "A market-breadth indicator (EMA19 − EMA39 of net advancing-vs-declining tokens) computed over your mainnet watched-token basket, using real Uniswap V2/V3/V4 swap history rather than a single reference price.\n\n" +
+				"Opening this page runs a one-time historical backscan (90 days of blocks) to seed the basket's daily closing prices — this can take a while on first visit. The oscillator needs at least 39 days of data before its reading is meaningful.",
 		},
 	}
 }

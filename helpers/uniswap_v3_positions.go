@@ -137,8 +137,8 @@ func GetLiquidityPositions(rpcURL string, ownerAddr common.Address) ([]Liquidity
 		pos.Token0Decimals = v4ERC20Decimals(ctx, client, pos.Token0)
 		pos.Token1Decimals = v4ERC20Decimals(ctx, client, pos.Token1)
 
-		pos.MinPrice = v4TickToPrice(pos.TickLower, pos.Token0Decimals, pos.Token1Decimals)
-		pos.MaxPrice = v4TickToPrice(pos.TickUpper, pos.Token0Decimals, pos.Token1Decimals)
+		pos.MinPrice = V4TickToPrice(pos.TickLower, pos.Token0Decimals, pos.Token1Decimals)
+		pos.MaxPrice = V4TickToPrice(pos.TickUpper, pos.Token0Decimals, pos.Token1Decimals)
 
 		positions = append(positions, pos)
 	}
@@ -436,7 +436,7 @@ func v4FetchPositionLiquidity(ctx context.Context, client *ethclient.Client, sta
 
 // v4RawSpotPrice returns 1.0001^tick — the V4 tick-to-price formula in raw
 // (smallest-unit) terms, i.e. token1_raw per token0_raw, with no decimal
-// adjustment. Shared by v4TickToPrice (human-readable display) and the V4
+// adjustment. Shared by V4TickToPrice (human-readable display) and the V4
 // quote code's price-impact calc (helpers/uniswap_v4_quote.go), which needs
 // the unadjusted raw ratio to stay consistent with how amountIn/amountOut
 // are already raw big.Int values throughout this codebase's V2/V3 quote math.
@@ -444,8 +444,10 @@ func v4RawSpotPrice(tick int32) float64 {
 	return math.Pow(1.0001, float64(tick))
 }
 
-// v4TickToPrice converts a V4 tick to a human-readable price (token1 per token0).
-func v4TickToPrice(tick int32, decimals0, decimals1 uint8) float64 {
+// V4TickToPrice converts a V4 tick to a human-readable price (token1 per
+// token0). Exported for the oscillator backfill (store package), which
+// derives V4 basket-swap prices from the same tick the live quote code uses.
+func V4TickToPrice(tick int32, decimals0, decimals1 uint8) float64 {
 	decimalAdjust := math.Pow(10, float64(int(decimals0)-int(decimals1)))
 	return v4RawSpotPrice(tick) * decimalAdjust
 }

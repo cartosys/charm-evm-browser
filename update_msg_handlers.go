@@ -270,6 +270,33 @@ func (m *model) handleV4BlockScanDone() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *model) handleOscillatorBackscanLine(msg oscillatorBackscanLineMsg) (tea.Model, tea.Cmd) {
+	m.logInfo(msg.line)
+	if m.oscillatorBackfillActive && m.oscillatorLines != nil {
+		return m, waitForOscillatorLine(m.oscillatorLines)
+	}
+	return m, nil
+}
+
+func (m *model) handleOscillatorBackscanDone() (tea.Model, tea.Cmd) {
+	m.oscillatorBackfillActive = false
+	m.oscillatorLines = nil
+	m.oscillatorCancel = nil
+	m.logInfo("McClellan Oscillator: backscan complete")
+	return m, loadOscillatorSeriesCmd(m.eventStore, m.oscillatorBasket())
+}
+
+func (m *model) handleOscillatorSeries(msg oscillatorSeriesMsg) (tea.Model, tea.Cmd) {
+	m.oscillatorDays = msg.days
+	m.oscillatorSeries = msg.values
+	if msg.err != nil {
+		m.oscillatorSeriesErr = msg.err.Error()
+	} else {
+		m.oscillatorSeriesErr = ""
+	}
+	return m, nil
+}
+
 func (m *model) handleIndexedEvent(msg indexedEventMsg) (tea.Model, tea.Cmd) {
 	ev := msg.event
 	if m.eventStore != nil {

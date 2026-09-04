@@ -3,6 +3,7 @@ package helpers
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/big"
 	"time"
 
@@ -224,6 +225,20 @@ func fetchReserves(ctx context.Context, client *ethclient.Client, pairAddress co
 		reserve1 = new(big.Int).SetBytes(data[32:64])
 	}
 	return reserve0, reserve1, nil
+}
+
+// V2ReservesToPrice returns token0's price in token1 units from a V2 pair's
+// reserves, decimal-adjusted. Exported for the oscillator backfill (store
+// package), which reads V2 Sync event reserves directly rather than
+// simulating a swap.
+func V2ReservesToPrice(reserve0, reserve1 *big.Int, decimals0, decimals1 uint8) float64 {
+	if reserve0.Sign() <= 0 || reserve1.Sign() <= 0 {
+		return 0
+	}
+	ratio := new(big.Float).Quo(new(big.Float).SetInt(reserve1), new(big.Float).SetInt(reserve0))
+	decimalAdjust := new(big.Float).SetFloat64(math.Pow(10, float64(int(decimals0)-int(decimals1))))
+	price, _ := new(big.Float).Mul(ratio, decimalAdjust).Float64()
+	return price
 }
 
 // orderReserves returns (reserveIn, reserveOut) given which token is the input.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"math/big"
 	"sort"
 	"strings"
@@ -202,6 +203,12 @@ func (m *model) navigateTo(page config.Page) tea.Cmd {
 		m.lastQuoteFromAmount = ""
 		m.lastQuoteFromTokenIdx = -1
 		m.lastQuoteToTokenIdx = -1
+	case config.PageOscillator:
+		m.oscillatorDays = nil
+		m.oscillatorSeries = nil
+		m.oscillatorSeriesErr = ""
+		return m.startOscillatorBackscan()
+
 	case config.PageTerraNullius:
 		m.terraNullFocusedField = 1
 		m.terraNullClaimsCount = ""
@@ -215,6 +222,32 @@ func (m *model) navigateTo(page config.Page) tea.Cmd {
 		return fetchTerraNumberOfClaims(m.ethClient)
 	}
 	return nil
+}
+
+// oscillatorBasket returns the mainnet-only subset of the watchlist the
+// McClellan Oscillator basket is built from — pinned to mainnet regardless
+// of the currently connected network (tokenWatchForActiveChain would
+// silently empty the basket while connected to Sepolia).
+func (m *model) oscillatorBasket() []rpc.WatchedToken {
+	return tokensForChain(m.tokenWatch, big.NewInt(1))
+}
+
+// startOscillatorBackscan (re)starts the McClellan Oscillator's basket
+// backscan and returns the Cmd that begins pumping its progress channel.
+// Shared by navigateTo's PageOscillator case and the page's manual
+// re-resolve action ("r").
+func (m *model) startOscillatorBackscan() tea.Cmd {
+	if m.eventStore == nil {
+		m.oscillatorSeriesErr = "event store unavailable"
+		return nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.oscillatorCancel = cancel
+	m.oscillatorBackfillActive = true
+	ch := m.eventStore.IndexOscillatorBackfill(ctx, m.rpcURL, helpers.UniswapAddressesForChain(big.NewInt(1)), m.oscillatorBasket())
+	m.oscillatorLines = ch
+	m.logInfo("McClellan Oscillator: starting basket backscan…")
+	return waitForOscillatorLine(ch)
 }
 
 // loadDetails fetches ETH and token balances for an address.
