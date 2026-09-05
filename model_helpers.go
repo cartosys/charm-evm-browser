@@ -15,9 +15,10 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// buildTokenWatchlist returns the starter token watchlist (WETH/USDC/USDT/DAI)
-// for both mainnet and Sepolia, each entry tagged with its ChainID, so a
-// fresh install has working defaults on whichever network is active.
+// buildTokenWatchlist returns the starter token watchlist
+// (WETH/USDC/USDT/DAI/USDY/WBTC on mainnet, WETH/USDC/USDT/DAI on Sepolia),
+// each entry tagged with its ChainID, so a fresh install has working
+// defaults on whichever network is active.
 func buildTokenWatchlist() []rpc.WatchedToken {
 	var tokens []rpc.WatchedToken
 
@@ -28,18 +29,10 @@ func buildTokenWatchlist() []rpc.WatchedToken {
 		rpc.WatchedToken{Symbol: "USDT", Decimals: 6, Address: mainnet.USDT, ChainID: big.NewInt(1)},
 		rpc.WatchedToken{Symbol: "DAI", Decimals: 18, Address: mainnet.DAI, ChainID: big.NewInt(1)},
 	)
-	if mainnet.SPCXon != (common.Address{}) {
-		tokens = append(tokens, rpc.WatchedToken{Symbol: "SPCXon", Decimals: 18, Address: mainnet.SPCXon, ChainID: big.NewInt(1)})
-		// helpers.OndoLiquidTokens (vendored by cmd/discoverondoliquidity) is
-		// mainnet-only, matching SPCXon above — gate on the same "is this
-		// mainnet" signal rather than adding a second network check.
-		for _, t := range helpers.OndoLiquidTokens {
-			if t.Address == mainnet.SPCXon {
-				continue // already added above
-			}
-			tokens = append(tokens, rpc.WatchedToken{Symbol: t.Symbol, Name: t.Name, Decimals: t.Decimals, Address: t.Address, ChainID: big.NewInt(1)})
-		}
-	}
+	tokens = append(tokens,
+		rpc.WatchedToken{Symbol: "USDY", Name: "Ondo U.S. Dollar Yield", Decimals: 18, Address: common.HexToAddress("0x96F6eF951840721AdBF46Ac996b59E0235CB985C"), ChainID: big.NewInt(1)},
+		rpc.WatchedToken{Symbol: "WBTC", Name: "Wrapped BTC", Decimals: 8, Address: common.HexToAddress("0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"), ChainID: big.NewInt(1)},
+	)
 
 	sepolia := helpers.UniswapAddressesForChain(big.NewInt(helpers.SepoliaChainID))
 	sepoliaChainID := big.NewInt(helpers.SepoliaChainID)
