@@ -854,7 +854,7 @@ func (m *model) renderPage(headerPanel string) (pageContent, nav string) {
 }
 
 func (m *model) renderOscillatorPage(headerPanel string) (pageContent, nav string) {
-	c, _ := oscillator.Render(m.w-2, m.h-8, m.oscillatorBackfillActive, m.oscillatorDays, m.oscillatorSeries, m.oscillatorSeriesErr)
+	c, _ := oscillator.Render(m.w-2, m.h-8, m.oscillatorBackfillActive, m.oscillatorDays, m.oscillatorSeries, m.oscillatorEthCloses, m.oscillatorEthChange, m.oscillatorSeriesErr)
 	navStr := oscillator.Nav(m.w-2, m.oscillatorBackfillActive)
 	return styles.PanelStyle.Width(m.contentW).Render(c), navStr
 }

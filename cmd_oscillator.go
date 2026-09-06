@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math"
+	"math/big"
 	"sort"
 
 	"charm-wallet-tui/helpers"
@@ -74,6 +75,26 @@ func loadOscillatorSeriesCmd(s *store.Store, tokens []rpc.WatchedToken) tea.Cmd 
 
 		netAdvances := helpers.NetAdvances(days, aligned)
 		oscillator := helpers.Oscillator(netAdvances)
-		return oscillatorSeriesMsg{days: days[1:], values: oscillator}
+		msg := oscillatorSeriesMsg{days: days[1:], values: oscillator}
+
+		weth := helpers.UniswapAddressesForChain(big.NewInt(1)).WETH
+		for _, t := range tokens {
+			if t.Address != weth {
+				continue
+			}
+			wethSeries, ok := aligned[t.Address.Hex()]
+			if !ok {
+				break
+			}
+			msg.ethCloses = wethSeries[1:]
+			ethChange := make([]float64, len(wethSeries)-1)
+			for i := 1; i < len(wethSeries); i++ {
+				ethChange[i-1] = wethSeries[i] - wethSeries[i-1]
+			}
+			msg.ethChange = ethChange
+			break
+		}
+
+		return msg
 	}
 }

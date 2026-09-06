@@ -235,7 +235,9 @@ type oscillatorBackscanDoneMsg struct{}
 // oscillatorSeriesMsg carries a freshly recomputed McClellan Oscillator
 // series (one value per day after the earliest day with data).
 type oscillatorSeriesMsg struct {
-	days   []string
-	values []float64
-	err    error
+	days      []string
+	values    []float64
+	ethCloses []float64 // WETH's own daily close, day-aligned to days; nil if WETH isn't in the basket
+	ethChange []float64 // day-over-day delta of ethCloses; nil under the same condition
+	err       error
 }

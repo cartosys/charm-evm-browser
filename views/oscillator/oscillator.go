@@ -65,11 +65,111 @@ func Nav(width int, backfillActive bool) string {
 // kept for consistency with the other page-view packages' Nav/Render+Geometry shape.
 type Geometry struct{}
 
+// chartRows is the combo chart's height — an odd count so there's a single
+// center row to use as the shared zero baseline for both overlaid series.
+const chartRows = 9
+
+// comboChart renders values (the oscillator) as a marker line overlaid on
+// ethChange (ETH's day-over-day price delta) rendered as bars, sharing one
+// zero-baseline row. The two series are normalized independently by their
+// own max absolute value in the window, so each fills the same chartRows
+// amplitude on screen regardless of their differing absolute units —
+// keeping them visually comparable rather than letting one dwarf the other.
+// values and ethChange must be the same length (one entry per day).
+func comboChart(values, ethChange []float64) string {
+	n := len(values)
+	if n == 0 {
+		return ""
+	}
+	half := chartRows / 2
+
+	maxAbs := func(series []float64) float64 {
+		m := 0.0
+		for _, v := range series {
+			if math.IsNaN(v) {
+				continue
+			}
+			if a := math.Abs(v); a > m {
+				m = a
+			}
+		}
+		return m
+	}
+	rowOffset := func(v, scale float64) (int, bool) {
+		if math.IsNaN(v) || scale == 0 {
+			return 0, false
+		}
+		r := int(math.Round(v / scale * float64(half)))
+		if r > half {
+			r = half
+		}
+		if r < -half {
+			r = -half
+		}
+		return r, true
+	}
+
+	oscScale := maxAbs(values)
+	changeScale := maxAbs(ethChange)
+	const zeroRow = chartRows / 2
+
+	grid := make([][]string, chartRows)
+	for r := range grid {
+		grid[r] = make([]string, n)
+		for c := range grid[r] {
+			grid[r][c] = " "
+		}
+	}
+
+	baselineStyle := lipgloss.NewStyle().Foreground(styles.CMuted)
+	posStyle := lipgloss.NewStyle().Foreground(styles.CAccent)
+	negStyle := lipgloss.NewStyle().Foreground(styles.CError)
+	oscStyle := lipgloss.NewStyle().Bold(true).Foreground(styles.CAccent2)
+
+	for c := 0; c < n; c++ {
+		grid[zeroRow][c] = baselineStyle.Render("─")
+	}
+
+	for c := 0; c < len(ethChange); c++ {
+		r, ok := rowOffset(ethChange[c], changeScale)
+		if !ok || r == 0 {
+			continue
+		}
+		style := posStyle
+		if ethChange[c] < 0 {
+			style = negStyle
+		}
+		if r > 0 {
+			for row := zeroRow - r; row <= zeroRow; row++ {
+				grid[row][c] = style.Render("█")
+			}
+		} else {
+			for row := zeroRow; row <= zeroRow-r; row++ {
+				grid[row][c] = style.Render("█")
+			}
+		}
+	}
+
+	for c := 0; c < n; c++ {
+		r, ok := rowOffset(values[c], oscScale)
+		if !ok {
+			continue
+		}
+		grid[zeroRow-r][c] = oscStyle.Render("●")
+	}
+
+	lines := make([]string, chartRows)
+	for r := range grid {
+		lines[r] = strings.Join(grid[r], "")
+	}
+	return strings.Join(lines, "\n")
+}
+
 // Render renders the McClellan Oscillator page: a "warming up" state while
 // fewer than DaysNeeded daily closes have been collected, otherwise the
-// current reading, a sparkline of recent values, and a short recent-values
-// table.
-func Render(width, height int, backfillActive bool, days []string, values []float64, statusErr string) (string, Geometry) {
+// current reading, a chart of recent values (overlaid with ETH's daily price
+// change when available), and a short recent-values table.
+func Render(width, height int, backfillActive bool, days []string, values []float64, ethCloses []float64, ethChange []float64, statusErr string) (string, Geometry) {
 	containerWidth := helpers.Min(80, width-4)
 
 	titleStyle := lipgloss.NewStyle().
@@ -129,24 +229,45 @@ func Render(width, height int, backfillActive bool, days []string, values []floa
 
 		sparkWindow := values
 		sparkDays := days
+		ethChangeWindow := ethChange
 		const maxSpark = 60
 		if len(sparkWindow) > maxSpark {
-			sparkWindow = sparkWindow[len(sparkWindow)-maxSpark:]
-			sparkDays = sparkDays[len(sparkDays)-maxSpark:]
+			start := len(sparkWindow) - maxSpark
+			sparkWindow = sparkWindow[start:]
+			sparkDays = sparkDays[start:]
+			if len(ethChangeWindow) == len(values) {
+				ethChangeWindow = ethChangeWindow[start:]
+			}
 		}
+		hasChange := len(ethChangeWindow) == len(sparkWindow)
 		if len(sparkWindow) > 0 {
-			parts = append(parts, "", lipgloss.NewStyle().Align(lipgloss.Center).Width(containerWidth).Foreground(styles.CAccent2).Render(sparkline(sparkWindow)))
+			parts = append(parts, "")
+			if hasChange {
+				parts = append(parts, lipgloss.NewStyle().Align(lipgloss.Center).Width(containerWidth).Render(comboChart(sparkWindow, ethChangeWindow)))
+				legend := lipgloss.NewStyle().Bold(true).Foreground(styles.CAccent2).Render("●") + " Oscillator    " +
+					lipgloss.NewStyle().Foreground(styles.CAccent).Render("█") + " ETH daily Δ"
+				parts = append(parts, lipgloss.NewStyle().Align(lipgloss.Center).Width(containerWidth).Render(legend))
+			} else {
+				parts = append(parts, lipgloss.NewStyle().Align(lipgloss.Center).Width(containerWidth).Foreground(styles.CAccent2).Render(sparkline(sparkWindow)))
+			}
 			parts = append(parts, lipgloss.NewStyle().Align(lipgloss.Center).Width(containerWidth).Foreground(styles.CMuted).
 				Render(sparkDays[0]+"  →  "+sparkDays[len(sparkDays)-1]))
 		}
 
+		hasEth := len(ethCloses) == len(values)
 		const tableRows = 10
 		start := len(values) - tableRows
 		if start < 0 {
 			start = 0
 		}
 		parts = append(parts, "")
-		header := lipgloss.NewStyle().Foreground(styles.CMuted).Bold(true).Render(fmt.Sprintf("%-12s  %s", "Day", "Oscillator"))
+		var headerText string
+		if hasEth {
+			headerText = fmt.Sprintf("%-12s  %-10s  %s", "Day", "Oscillator", "ETH Close")
+		} else {
+			headerText = fmt.Sprintf("%-12s  %s", "Day", "Oscillator")
+		}
+		header := lipgloss.NewStyle().Foreground(styles.CMuted).Bold(true).Render(headerText)
 		parts = append(parts, lipgloss.NewStyle().Align(lipgloss.Center).Width(containerWidth).Render(header))
 		for i := len(values) - 1; i >= start; i-- {
 			var valText string
@@ -155,7 +276,16 @@ func Render(width, height int, backfillActive bool, days []string, values []floa
 			} else {
 				valText = fmt.Sprintf("%+.2f", values[i])
 			}
-			row := fmt.Sprintf("%-12s  %s", days[i], valText)
+			var row string
+			if hasEth {
+				ethText := "—"
+				if !math.IsNaN(ethCloses[i]) {
+					ethText = fmt.Sprintf("$%.2f", ethCloses[i])
+				}
+				row = fmt.Sprintf("%-12s  %-10s  %s", days[i], valText, ethText)
+			} else {
+				row = fmt.Sprintf("%-12s  %s", days[i], valText)
+			}
 			parts = append(parts, lipgloss.NewStyle().Align(lipgloss.Center).Width(containerWidth).Foreground(styles.CText).Render(row))
 		}
 	}

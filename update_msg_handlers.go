@@ -289,6 +289,8 @@ func (m *model) handleOscillatorBackscanDone() (tea.Model, tea.Cmd) {
 func (m *model) handleOscillatorSeries(msg oscillatorSeriesMsg) (tea.Model, tea.Cmd) {
 	m.oscillatorDays = msg.days
 	m.oscillatorSeries = msg.values
+	m.oscillatorEthCloses = msg.ethCloses
+	m.oscillatorEthChange = msg.ethChange
 	if msg.err != nil {
 		m.oscillatorSeriesErr = msg.err.Error()
 	} else {
