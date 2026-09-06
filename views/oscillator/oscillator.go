@@ -69,14 +69,25 @@ type Geometry struct{}
 // center row to use as the shared zero baseline for both overlaid series.
 const chartRows = 9
 
+// chartWindowDays is how many of the most recent days the combo chart plots.
+// chartColWidth is how many character-columns each day gets — widened from
+// 1 as chartWindowDays shrank from a prior 60-day window, so the chart keeps
+// the same total on-screen width (60 = chartWindowDays*chartColWidth) while
+// each day reads as a wider, easier-to-tell-apart bar/marker.
+const (
+	chartWindowDays = 20
+	chartColWidth   = 3
+)
+
 // comboChart renders values (the oscillator) as a marker line overlaid on
 // ethChange (ETH's day-over-day price delta) rendered as bars, sharing one
 // zero-baseline row. The two series are normalized independently by their
 // own max absolute value in the window, so each fills the same chartRows
 // amplitude on screen regardless of their differing absolute units —
 // keeping them visually comparable rather than letting one dwarf the other.
-// values and ethChange must be the same length (one entry per day).
-func comboChart(values, ethChange []float64) string {
+// Each day is drawn colWidth characters wide. values and ethChange must be
+// the same length (one entry per day).
+func comboChart(values, ethChange []float64, colWidth int) string {
 	n := len(values)
 	if n == 0 {
 		return ""
@@ -160,7 +171,11 @@ func comboChart(values, ethChange []float64) string {
 
 	lines := make([]string, chartRows)
 	for r := range grid {
-		lines[r] = strings.Join(grid[r], "")
+		var b strings.Builder
+		for c := 0; c < n; c++ {
+			b.WriteString(strings.Repeat(grid[r][c], colWidth))
+		}
+		lines[r] = b.String()
 	}
 	return strings.Join(lines, "\n")
 }
@@ -230,9 +245,8 @@ func Render(width, height int, backfillActive bool, days []string, values []floa
 		sparkWindow := values
 		sparkDays := days
 		ethChangeWindow := ethChange
-		const maxSpark = 60
-		if len(sparkWindow) > maxSpark {
-			start := len(sparkWindow) - maxSpark
+		if len(sparkWindow) > chartWindowDays {
+			start := len(sparkWindow) - chartWindowDays
 			sparkWindow = sparkWindow[start:]
 			sparkDays = sparkDays[start:]
 			if len(ethChangeWindow) == len(values) {
@@ -243,7 +257,7 @@ func Render(width, height int, backfillActive bool, days []string, values []floa
 		if len(sparkWindow) > 0 {
 			parts = append(parts, "")
 			if hasChange {
-				parts = append(parts, lipgloss.NewStyle().Align(lipgloss.Center).Width(containerWidth).Render(comboChart(sparkWindow, ethChangeWindow)))
+				parts = append(parts, lipgloss.NewStyle().Align(lipgloss.Center).Width(containerWidth).Render(comboChart(sparkWindow, ethChangeWindow, chartColWidth)))
 				legend := lipgloss.NewStyle().Bold(true).Foreground(styles.CAccent2).Render("●") + " Oscillator    " +
 					lipgloss.NewStyle().Foreground(styles.CAccent).Render("█") + " ETH daily Δ"
 				parts = append(parts, lipgloss.NewStyle().Align(lipgloss.Center).Width(containerWidth).Render(legend))
