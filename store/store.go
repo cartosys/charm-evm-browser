@@ -42,11 +42,11 @@ CREATE INDEX IF NOT EXISTS idx_block ON indexed_events(block);
 
 // v1Migration replaces the old catch-all V4 tables with a normalised schema:
 //
-//   v4_pools              — one row per pool, keyed by pool_id (Initialize events)
-//   v4_swaps              — Swap events, FK → v4_pools(pool_id)
-//   v4_modify_liquidity   — ModifyLiquidity events, FK → v4_pools(pool_id)
-//   v4_donates            — Donate events, FK → v4_pools(pool_id)
-//   v4_transfers          — ERC-6909 Transfer events, indexed by caller/from/to/token_id
+//	v4_pools              — one row per pool, keyed by pool_id (Initialize events)
+//	v4_swaps              — Swap events, FK → v4_pools(pool_id)
+//	v4_modify_liquidity   — ModifyLiquidity events, FK → v4_pools(pool_id)
+//	v4_donates            — Donate events, FK → v4_pools(pool_id)
+//	v4_transfers          — ERC-6909 Transfer events, indexed by caller/from/to/token_id
 //
 // FKs are declared for schema clarity and JOIN use; SQLite does not enforce
 // them unless PRAGMA foreign_keys = ON is set per connection.
@@ -199,6 +199,31 @@ func migrateToV2(db *sql.DB) error {
 	return err
 }
 
+// v3Migration adds the oscillator backscan checkpoint. Existing rows get
+// last_scanned_block backfilled from resolved_at_block, which already holds
+// the tip the old code had scanned through by the time that row was written
+// (resolution happened before the chunked scan loop, but resolved_at_block
+// was set to that same run's tip).
+const v3Migration = `
+ALTER TABLE oscillator_pool_refs ADD COLUMN last_scanned_block INTEGER NOT NULL DEFAULT 0;
+UPDATE oscillator_pool_refs SET last_scanned_block = resolved_at_block WHERE last_scanned_block = 0;
+`
+
+func migrateToV3(db *sql.DB) error {
+	var ver int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&ver); err != nil {
+		return err
+	}
+	if ver >= 3 {
+		return nil
+	}
+	if _, err := db.Exec(v3Migration); err != nil {
+		return err
+	}
+	_, err := db.Exec("PRAGMA user_version = 3")
+	return err
+}
+
 // Store wraps a SQLite database for persisting indexed events.
 type Store struct {
 	db *sql.DB
@@ -220,6 +245,10 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	if err := migrateToV2(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := migrateToV3(db); err != nil {
 		db.Close()
 		return nil, err
 	}

@@ -90,6 +90,28 @@ func poolKeyString(pool helpers.ResolvedPool) string {
 	return pool.PairAddr.Hex()
 }
 
+// oscRefScan pairs a resolved pool ref with the block it still needs
+// scanning from this run — LastScannedBlock+1 for an already-cached ref
+// (incremental catch-up), or the full window start for a token resolved for
+// the first time this run (no history yet).
+type oscRefScan struct {
+	ref       OscillatorPoolRef
+	fromBlock uint64
+}
+
+// dueKeys returns the map keys (pool addresses or V4 pool IDs) whose ref
+// still needs scanning as of chunkEnd — i.e. its fromBlock has been reached.
+// Pure and RPC-free so the chunk-inclusion logic is unit-testable on its own.
+func dueKeys[K comparable](m map[K]oscRefScan, chunkEnd uint64) []K {
+	keys := make([]K, 0, len(m))
+	for k, sc := range m {
+		if sc.fromBlock <= chunkEnd {
+			keys = append(keys, k)
+		}
+	}
+	return keys
+}
+
 // tokenPriceFromToken0Price converts "token0 price in token1 units" (the
 // convention shared by V2ReservesToPrice/SqrtPriceX96ToPrice/V4TickToPrice)
 // into "basket token price in ref-token units", given which side of the pool
@@ -160,13 +182,13 @@ func (s *Store) indexOscillatorBackfillWindow(ctx context.Context, httpURL strin
 		}
 		tip := tipHeader.Number.Uint64()
 
-		fromBlock := uint64(0)
-		if window := windowBlocks; tip > window {
-			fromBlock = tip - window
+		windowStart := uint64(0)
+		if tip > windowBlocks {
+			windowStart = tip - windowBlocks
 		}
-		emit(fmt.Sprintf("[Oscillator] resolving %d basket tokens, scanning blocks %d–%d", len(tokens), fromBlock, tip))
+		emit(fmt.Sprintf("[Oscillator] checking %d basket tokens against tip block %d", len(tokens), tip))
 
-		var refs []OscillatorPoolRef
+		var scans []oscRefScan
 		for _, t := range tokens {
 			if ctx.Err() != nil {
 				return
@@ -177,7 +199,13 @@ func (s *Store) indexOscillatorBackfillWindow(ctx context.Context, httpURL strin
 				continue
 			}
 			if cached != nil {
-				refs = append(refs, *cached)
+				from := cached.LastScannedBlock + 1
+				if from > tip {
+					emit(fmt.Sprintf("[Oscillator] %s already up to date (scanned through block %d)", t.Symbol, cached.LastScannedBlock))
+				} else {
+					emit(fmt.Sprintf("[Oscillator] %s resuming from block %d (%d new block(s))", t.Symbol, from, tip-from+1))
+				}
+				scans = append(scans, oscRefScan{ref: *cached, fromBlock: from})
 				continue
 			}
 
@@ -207,57 +235,62 @@ func (s *Store) indexOscillatorBackfillWindow(ctx context.Context, httpURL strin
 			}
 
 			ref := OscillatorPoolRef{
-				TokenAddr:       t.Address,
-				Version:         pool.Version,
-				PoolKey:         poolKeyString(pool),
-				RefToken:        refToken,
-				TokenDecimals:   t.Decimals,
-				RefDecimals:     refDecimals,
-				TokenIsToken0:   isToken0,
-				V3Fee:           pool.V3Fee,
-				V4Hooks:         pool.V4Key.Hooks,
-				V4Fee:           pool.V4Key.Fee,
-				V4TickSpacing:   pool.V4Key.TickSpacing,
-				ResolvedAtBlock: tip,
+				TokenAddr:        t.Address,
+				Version:          pool.Version,
+				PoolKey:          poolKeyString(pool),
+				RefToken:         refToken,
+				TokenDecimals:    t.Decimals,
+				RefDecimals:      refDecimals,
+				TokenIsToken0:    isToken0,
+				V3Fee:            pool.V3Fee,
+				V4Hooks:          pool.V4Key.Hooks,
+				V4Fee:            pool.V4Key.Fee,
+				V4TickSpacing:    pool.V4Key.TickSpacing,
+				ResolvedAtBlock:  tip,
+				LastScannedBlock: 0,
 			}
 			if err := s.SaveOscillatorPoolRef(ref); err != nil {
 				emit(fmt.Sprintf("[Oscillator] WARN: save pool ref for %s: %v", t.Symbol, err))
 				continue
 			}
-			emit(fmt.Sprintf("[Oscillator] resolved %s → %s pool %s", t.Symbol, versionLabel(pool.Version), ref.PoolKey))
-			refs = append(refs, ref)
+			emit(fmt.Sprintf("[Oscillator] resolved %s → %s pool %s — backfilling %d-day window", t.Symbol, versionLabel(pool.Version), ref.PoolKey, oscillatorBackfillWindowDays))
+			scans = append(scans, oscRefScan{ref: ref, fromBlock: windowStart})
 		}
 
-		if len(refs) == 0 {
+		if len(scans) == 0 {
 			emit("[Oscillator] no basket tokens resolved — nothing to scan")
 			return
 		}
 
-		v2Map := make(map[common.Address]OscillatorPoolRef)
-		v3Map := make(map[common.Address]OscillatorPoolRef)
-		v4Map := make(map[common.Hash]OscillatorPoolRef)
-		for _, ref := range refs {
-			switch ref.Version {
+		v2Map := make(map[common.Address]oscRefScan)
+		v3Map := make(map[common.Address]oscRefScan)
+		v4Map := make(map[common.Hash]oscRefScan)
+		overallFrom := tip + 1
+		pending := 0
+		for _, sc := range scans {
+			if sc.fromBlock > tip {
+				continue // already caught up — no eth_getLogs calls needed for this token this run
+			}
+			pending++
+			if sc.fromBlock < overallFrom {
+				overallFrom = sc.fromBlock
+			}
+			switch sc.ref.Version {
 			case helpers.PoolVersionV2:
-				v2Map[common.HexToAddress(ref.PoolKey)] = ref
+				v2Map[common.HexToAddress(sc.ref.PoolKey)] = sc
 			case helpers.PoolVersionV3:
-				v3Map[common.HexToAddress(ref.PoolKey)] = ref
+				v3Map[common.HexToAddress(sc.ref.PoolKey)] = sc
 			case helpers.PoolVersionV4:
-				v4Map[common.HexToHash(ref.PoolKey)] = ref
+				v4Map[common.HexToHash(sc.ref.PoolKey)] = sc
 			}
 		}
-		v2Addrs := make([]common.Address, 0, len(v2Map))
-		for a := range v2Map {
-			v2Addrs = append(v2Addrs, a)
+
+		if pending == 0 {
+			emit(fmt.Sprintf("[Oscillator] all %d basket tokens up to date at block %d", len(scans), tip))
+			return
 		}
-		v3Addrs := make([]common.Address, 0, len(v3Map))
-		for a := range v3Map {
-			v3Addrs = append(v3Addrs, a)
-		}
-		v4IDs := make([]common.Hash, 0, len(v4Map))
-		for id := range v4Map {
-			v4IDs = append(v4IDs, id)
-		}
+		emit(fmt.Sprintf("[Oscillator] scanning blocks %d–%d for %d token(s) needing catch-up (%d already up to date)",
+			overallFrom, tip, pending, len(scans)-pending))
 
 		priceForRef := func(ref OscillatorPoolRef, token0PriceInToken1 float64) float64 {
 			return tokenPriceFromToken0Price(token0PriceInToken1, ref.TokenIsToken0)
@@ -271,13 +304,35 @@ func (s *Store) indexOscillatorBackfillWindow(ctx context.Context, httpURL strin
 
 		calibAnchorBlock := tip
 		calibAnchorTime := int64(tipHeader.Time)
-		lastCalibBlock := fromBlock
+		lastCalibBlock := overallFrom
 		blockTimeEstimate := func(block uint64) int64 {
 			return calibAnchorTime - int64(calibAnchorBlock-block)*avgBlockTimeSecs
 		}
 
+		// checkpoint advances the persisted last_scanned_block for every ref
+		// in keys to chunkEnd — called only after that version's fetch for
+		// this chunk succeeded, so a token whose fetch failed keeps its
+		// earlier checkpoint and that block range gets retried on the next
+		// run instead of being silently skipped forever.
+		checkpoint := func(keys []common.Address, byAddr map[common.Address]oscRefScan, chunkEnd uint64) {
+			for _, a := range keys {
+				sc := byAddr[a]
+				if err := s.UpdateOscillatorLastScanned(sc.ref.TokenAddr, chunkEnd); err != nil {
+					emit(fmt.Sprintf("[Oscillator] WARN: checkpoint %s at block %d: %v", sc.ref.TokenAddr.Hex(), chunkEnd, err))
+				}
+			}
+		}
+		checkpointV4 := func(keys []common.Hash, byID map[common.Hash]oscRefScan, chunkEnd uint64) {
+			for _, id := range keys {
+				sc := byID[id]
+				if err := s.UpdateOscillatorLastScanned(sc.ref.TokenAddr, chunkEnd); err != nil {
+					emit(fmt.Sprintf("[Oscillator] WARN: checkpoint %s at block %d: %v", sc.ref.TokenAddr.Hex(), chunkEnd, err))
+				}
+			}
+		}
+
 		var totalSaved int
-		for chunkStart := fromBlock; chunkStart <= tip; {
+		for chunkStart := overallFrom; chunkStart <= tip; {
 			if ctx.Err() != nil {
 				return
 			}
@@ -286,7 +341,7 @@ func (s *Store) indexOscillatorBackfillWindow(ctx context.Context, httpURL strin
 				chunkEnd = tip
 			}
 
-			if chunkStart == fromBlock || chunkEnd-lastCalibBlock >= calibIntervalBlocks {
+			if chunkStart == overallFrom || chunkEnd-lastCalibBlock >= calibIntervalBlocks {
 				hdr, err := retryWithBackoff(ctx, emit, "calibration header", func() (*types.Header, error) {
 					return client.HeaderByNumber(ctx, new(big.Int).SetUint64(chunkEnd))
 				})
@@ -299,6 +354,7 @@ func (s *Store) indexOscillatorBackfillWindow(ctx context.Context, httpURL strin
 
 			chunkSaved := 0
 
+			v2Addrs := dueKeys(v2Map, chunkEnd)
 			v2Events, err := retryWithBackoff(ctx, emit, "V2 fetch", func() ([]indexer.V2SyncEvent, error) {
 				return indexer.FetchV2Syncs(ctx, client, v2Addrs, chunkStart, chunkEnd)
 			})
@@ -306,22 +362,24 @@ func (s *Store) indexOscillatorBackfillWindow(ctx context.Context, httpURL strin
 				emit(fmt.Sprintf("[Oscillator] WARN: V2 fetch blocks %d–%d: %v", chunkStart, chunkEnd, err))
 			} else {
 				for _, ev := range v2Events {
-					ref, ok := v2Map[ev.PairAddr]
+					sc, ok := v2Map[ev.PairAddr]
 					if !ok {
 						continue
 					}
-					d0, d1 := token0Decimals(ref)
+					d0, d1 := token0Decimals(sc.ref)
 					token0Price := helpers.V2ReservesToPrice(ev.Reserve0, ev.Reserve1, d0, d1)
-					price := priceForRef(ref, token0Price)
+					price := priceForRef(sc.ref, token0Price)
 					if price <= 0 {
 						continue
 					}
-					if err := s.SaveOscillatorSwap(ref.TokenAddr, ev.Block, blockTimeEstimate(ev.Block), ev.TxHash, ev.LogIndex, price); err == nil {
+					if err := s.SaveOscillatorSwap(sc.ref.TokenAddr, ev.Block, blockTimeEstimate(ev.Block), ev.TxHash, ev.LogIndex, price); err == nil {
 						chunkSaved++
 					}
 				}
+				checkpoint(v2Addrs, v2Map, chunkEnd)
 			}
 
+			v3Addrs := dueKeys(v3Map, chunkEnd)
 			v3Events, err := retryWithBackoff(ctx, emit, "V3 fetch", func() ([]indexer.V3SwapEvent, error) {
 				return indexer.FetchV3Swaps(ctx, client, v3Addrs, chunkStart, chunkEnd)
 			})
@@ -329,22 +387,24 @@ func (s *Store) indexOscillatorBackfillWindow(ctx context.Context, httpURL strin
 				emit(fmt.Sprintf("[Oscillator] WARN: V3 fetch blocks %d–%d: %v", chunkStart, chunkEnd, err))
 			} else {
 				for _, ev := range v3Events {
-					ref, ok := v3Map[ev.PoolAddr]
+					sc, ok := v3Map[ev.PoolAddr]
 					if !ok {
 						continue
 					}
-					d0, d1 := token0Decimals(ref)
+					d0, d1 := token0Decimals(sc.ref)
 					token0Price := helpers.SqrtPriceX96ToPrice(ev.SqrtPriceX96, d0, d1)
-					price := priceForRef(ref, token0Price)
+					price := priceForRef(sc.ref, token0Price)
 					if price <= 0 {
 						continue
 					}
-					if err := s.SaveOscillatorSwap(ref.TokenAddr, ev.Block, blockTimeEstimate(ev.Block), ev.TxHash, ev.LogIndex, price); err == nil {
+					if err := s.SaveOscillatorSwap(sc.ref.TokenAddr, ev.Block, blockTimeEstimate(ev.Block), ev.TxHash, ev.LogIndex, price); err == nil {
 						chunkSaved++
 					}
 				}
+				checkpoint(v3Addrs, v3Map, chunkEnd)
 			}
 
+			v4IDs := dueKeys(v4Map, chunkEnd)
 			v4Events, err := retryWithBackoff(ctx, emit, "V4 fetch", func() ([]indexer.V4PoolEvent, error) {
 				return indexer.FetchV4SwapsForPoolIDs(ctx, client, v4IDs, chunkStart, chunkEnd)
 			})
@@ -352,20 +412,21 @@ func (s *Store) indexOscillatorBackfillWindow(ctx context.Context, httpURL strin
 				emit(fmt.Sprintf("[Oscillator] WARN: V4 fetch blocks %d–%d: %v", chunkStart, chunkEnd, err))
 			} else {
 				for _, ev := range v4Events {
-					ref, ok := v4Map[ev.PoolID]
+					sc, ok := v4Map[ev.PoolID]
 					if !ok || ev.Tick == nil {
 						continue
 					}
-					d0, d1 := token0Decimals(ref)
+					d0, d1 := token0Decimals(sc.ref)
 					token0Price := helpers.V4TickToPrice(int32(ev.Tick.Int64()), d0, d1)
-					price := priceForRef(ref, token0Price)
+					price := priceForRef(sc.ref, token0Price)
 					if price <= 0 {
 						continue
 					}
-					if err := s.SaveOscillatorSwap(ref.TokenAddr, ev.Block, blockTimeEstimate(ev.Block), ev.TxHash, ev.LogIndex, price); err == nil {
+					if err := s.SaveOscillatorSwap(sc.ref.TokenAddr, ev.Block, blockTimeEstimate(ev.Block), ev.TxHash, ev.LogIndex, price); err == nil {
 						chunkSaved++
 					}
 				}
+				checkpointV4(v4IDs, v4Map, chunkEnd)
 			}
 
 			totalSaved += chunkSaved
@@ -374,7 +435,7 @@ func (s *Store) indexOscillatorBackfillWindow(ctx context.Context, httpURL strin
 			chunkStart = chunkEnd + 1
 		}
 
-		emit(fmt.Sprintf("[Oscillator] done — %d basket tokens, %d swaps indexed", len(refs), totalSaved))
+		emit(fmt.Sprintf("[Oscillator] done — %d basket tokens, %d swaps indexed", len(scans), totalSaved))
 	}()
 	return out
 }

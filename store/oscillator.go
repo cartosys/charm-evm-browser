@@ -13,18 +13,19 @@ import (
 // token — resolved once via helpers.ResolveBasketToken, reused on later app
 // restarts instead of re-running ResolvePairOnChain every time.
 type OscillatorPoolRef struct {
-	TokenAddr       common.Address
-	Version         helpers.PoolVersion
-	PoolKey         string // V2/V3 pool contract address hex, or V4 pool_id hex
-	RefToken        common.Address
-	TokenDecimals   uint8
-	RefDecimals     uint8
-	TokenIsToken0   bool
-	V3Fee           uint32
-	V4Hooks         common.Address
-	V4Fee           uint32
-	V4TickSpacing   int32
-	ResolvedAtBlock uint64
+	TokenAddr        common.Address
+	Version          helpers.PoolVersion
+	PoolKey          string // V2/V3 pool contract address hex, or V4 pool_id hex
+	RefToken         common.Address
+	TokenDecimals    uint8
+	RefDecimals      uint8
+	TokenIsToken0    bool
+	V3Fee            uint32
+	V4Hooks          common.Address
+	V4Fee            uint32
+	V4TickSpacing    int32
+	ResolvedAtBlock  uint64
+	LastScannedBlock uint64
 }
 
 // SaveOscillatorPoolRef persists (or replaces) the resolved pool for a basket token.
@@ -36,12 +37,22 @@ func (s *Store) SaveOscillatorPoolRef(ref OscillatorPoolRef) error {
 	_, err := s.db.Exec(`
 		INSERT OR REPLACE INTO oscillator_pool_refs
 			(token_addr, version, pool_key, ref_token, token_decimals, ref_decimals,
-			 token_is_token0, v3_fee, v4_hooks, v4_fee, v4_tick_spacing, resolved_at_block)
-		VALUES (?,?,?,?,?,?, ?,?,?,?,?,?)`,
+			 token_is_token0, v3_fee, v4_hooks, v4_fee, v4_tick_spacing, resolved_at_block,
+			 last_scanned_block)
+		VALUES (?,?,?,?,?,?, ?,?,?,?,?,?, ?)`,
 		ref.TokenAddr.Hex(), int(ref.Version), ref.PoolKey, ref.RefToken.Hex(),
 		ref.TokenDecimals, ref.RefDecimals, isToken0, ref.V3Fee,
 		ref.V4Hooks.Hex(), ref.V4Fee, ref.V4TickSpacing, ref.ResolvedAtBlock,
+		ref.LastScannedBlock,
 	)
+	return err
+}
+
+// UpdateOscillatorLastScanned advances the persisted scan checkpoint for
+// token after a chunk covering up to block has been fetched and saved.
+func (s *Store) UpdateOscillatorLastScanned(token common.Address, block uint64) error {
+	_, err := s.db.Exec(`UPDATE oscillator_pool_refs SET last_scanned_block = ? WHERE token_addr = ?`,
+		block, token.Hex())
 	return err
 }
 
@@ -53,30 +64,32 @@ func scanOscillatorPoolRef(row interface {
 		version, tokenDecimals, refDecimals   int
 		isToken0, v3Fee, v4Fee                int
 		v4TickSpacing                         int
-		resolvedAtBlock                       uint64
+		resolvedAtBlock, lastScannedBlock     uint64
 	)
 	if err := row.Scan(&tokenAddr, &version, &poolKey, &refToken, &tokenDecimals, &refDecimals,
-		&isToken0, &v3Fee, &v4Hooks, &v4Fee, &v4TickSpacing, &resolvedAtBlock); err != nil {
+		&isToken0, &v3Fee, &v4Hooks, &v4Fee, &v4TickSpacing, &resolvedAtBlock, &lastScannedBlock); err != nil {
 		return nil, err
 	}
 	return &OscillatorPoolRef{
-		TokenAddr:       common.HexToAddress(tokenAddr),
-		Version:         helpers.PoolVersion(version),
-		PoolKey:         poolKey,
-		RefToken:        common.HexToAddress(refToken),
-		TokenDecimals:   uint8(tokenDecimals),
-		RefDecimals:     uint8(refDecimals),
-		TokenIsToken0:   isToken0 != 0,
-		V3Fee:           uint32(v3Fee),
-		V4Hooks:         common.HexToAddress(v4Hooks),
-		V4Fee:           uint32(v4Fee),
-		V4TickSpacing:   int32(v4TickSpacing),
-		ResolvedAtBlock: resolvedAtBlock,
+		TokenAddr:        common.HexToAddress(tokenAddr),
+		Version:          helpers.PoolVersion(version),
+		PoolKey:          poolKey,
+		RefToken:         common.HexToAddress(refToken),
+		TokenDecimals:    uint8(tokenDecimals),
+		RefDecimals:      uint8(refDecimals),
+		TokenIsToken0:    isToken0 != 0,
+		V3Fee:            uint32(v3Fee),
+		V4Hooks:          common.HexToAddress(v4Hooks),
+		V4Fee:            uint32(v4Fee),
+		V4TickSpacing:    int32(v4TickSpacing),
+		ResolvedAtBlock:  resolvedAtBlock,
+		LastScannedBlock: lastScannedBlock,
 	}, nil
 }
 
 const oscillatorPoolRefColumns = `token_addr, version, pool_key, ref_token, token_decimals, ref_decimals,
-			 token_is_token0, v3_fee, v4_hooks, v4_fee, v4_tick_spacing, resolved_at_block`
+			 token_is_token0, v3_fee, v4_hooks, v4_fee, v4_tick_spacing, resolved_at_block,
+			 last_scanned_block`
 
 // GetOscillatorPoolRef returns the cached pool ref for token, or nil, nil if not yet resolved.
 func (s *Store) GetOscillatorPoolRef(token common.Address) (*OscillatorPoolRef, error) {
